@@ -88,8 +88,6 @@ source .venv/bin/activate
 pip install -r requirements.txt
 pip install gunicorn # Required for Linux production
 
-Update your .env file with your production database credentials and your actual production domain (e.g., https://vton.microprixs.com) instead of the Ngrok URL.
-
 3. Configure the Systemd Service
 To ensure the backend runs continuously, restarts on failure, and strictly adheres to memory limits, create a systemd service.
 
