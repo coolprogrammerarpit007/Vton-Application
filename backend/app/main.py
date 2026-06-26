@@ -19,7 +19,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Initialize database schemas
+
 try:
     models.Base.metadata.create_all(bind=engine)
     logger.info("Database schemas initialized successfully.")
@@ -28,9 +28,7 @@ except Exception as e:
 
 app = FastAPI(title="Virtual Try-On API Studio")
 
-# ==========================================
-# 2. NEW: Add CORS Middleware to allow frontend traffic
-# ==========================================
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Allows all origins for local development
@@ -74,7 +72,7 @@ async def create_tryon_job(
         logger.error(f"Disk Write Error: Failed to save uploaded images.", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error while saving files to disk.")
     
-    # ⚠️ Remember to change this to your Ngrok URL during testing so FASHN can access the files
+    #  Remember to change this to your Ngrok URL during testing so FASHN can access the files
     base_url = "http://localhost:8000/static_uploads" 
     person_url = f"{base_url}/{person_filename}"
     garment_url = f"{base_url}/{garment_filename}"
