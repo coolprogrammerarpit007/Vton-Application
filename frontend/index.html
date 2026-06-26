@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Virtual Try-On Studio</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>AI Virtual Try-On Studio</h1>
+            <p>Snap a photo or upload a file to instantly try on clothing.</p>
+        </header>
+
+        <main class="workspace">
+            <div class="control-panel">
+                <div class="card">
+                    <h3>1. Your Photo</h3>
+                    <div class="tab-system">
+                        <button id="btnTabCamera" class="tab-btn active">Use Camera</button>
+                        <button id="btnTabUpload" class="tab-btn">Upload Image</button>
+                    </div>
+
+                    <div id="cameraView" class="view-block">
+                        <div class="video-container">
+                            <video id="videoStream" autoplay playsinline></video>
+                            <div class="overlay-guide"></div>
+                        </div>
+                        <div class="camera-controls">
+                            <button id="btnFlipCamera" class="secondary-btn">🔄 Flip Camera</button>
+                            <button id="btnCapture" class="primary-btn">📸 Capture Photo</button>
+                        </div>
+                    </div>
+
+                    <div id="uploadView" class="view-block hidden">
+                        <input type="file" id="userFileInput" accept="image/*">
+                        <p class="hint">Upload a well-lit, front-facing full/half body photo.</p>
+                    </div>
+
+                    <div id="personPreviewContainer" class="preview-box hidden">
+                        <img id="personPreview" src="" alt="User Preview">
+                        <button id="btnResetPerson" class="danger-btn">Remove Photo</button>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h3>2. Apparel Choice</h3>
+                    <div class="form-group">
+                        <label for="garmentCategory">Clothing Category:</label>
+                        <select id="garmentCategory">
+                            <option value="tops">Top Wear (Shirts/T-shirts)</option>
+                            <option value="bottoms">Bottom Wear (Pants/Skirts)</option>
+                            <option value="one-pieces">One-Piece (Dresses/Suits)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="garmentDescription">Styling Prompt (Optional):</label>
+                        <input type="text" id="garmentDescription" placeholder="e.g., tuck it in, half-sleeve red cotton shirt">
+                    </div>
+                    <div class="form-group">
+                        <label for="garmentFileInput">Garment Image:</label>
+                        <input type="file" id="garmentFileInput" accept="image/*">
+                    </div>
+                </div>
+
+                <button id="btnGenerate" class="action-btn" disabled>Generate Virtual Try-On</button>
+            </div>
+
+            <div class="output-panel">
+                <div class="card result-card">
+                    <h3>3. Try-On Result</h3>
+                    <div id="resultDisplay" class="result-display-area">
+                        <p id="placeholderText">Upload your assets and hit generate to see the AI magic.</p>
+                        
+                        <div id="loadingEngine" class="spinner-container hidden">
+                            <div class="spinner"></div>
+                            <p id="loadingStatusText">Uploading files to API instance...</p>
+                        </div>
+
+                        <img id="finalOutputImage" class="hidden" src="" alt="AI Try-On Result">
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <canvas id="captureCanvas" class="hidden"></canvas>
+    <script src="js/app.js"></script>
+</body>
+</html>
