@@ -1,30 +1,10 @@
 const API_BASE_URL = "https://vton.falcondetectives.com"; 
 const DUMMY_USER_ID = 1; 
-const DEBUG_MODE = true; // Toggle this to false to silence console logs in the future
 
 let currentStream = null;
 let useFacingMode = "user"; 
 let capturedBlob = null; 
 
-// ==========================================
-// Debugging Utility Functions
-// ==========================================
-function logDebug(action, data = null) {
-    if (!DEBUG_MODE) return;
-    const time = new Date().toISOString().split('T')[1].slice(0, -1);
-    if (data) {
-        console.log(`[${time}]  VTON: ${action}`, data);
-    } else {
-        console.log(`[${time}]  VTON: ${action}`);
-    }
-}
-
-function logError(action, err) {
-    const time = new Date().toISOString().split('T')[1].slice(0, -1);
-    console.error(`[${time}]  VTON ERROR: ${action}`, err);
-}
-
-// DOM Elements
 const video = document.getElementById("videoStream");
 const canvas = document.getElementById("captureCanvas");
 const personPreview = document.getElementById("personPreview");
@@ -44,25 +24,20 @@ const btnCapture = document.getElementById("btnCapture");
 const btnResetPerson = document.getElementById("btnResetPerson");
 const btnGenerate = document.getElementById("btnGenerate");
 const garmentCategory = document.getElementById("garmentCategory");
-const garmentDescription = document.getElementById("garmentDescription"); 
+const garmentDescription = document.getElementById("garmentDescription"); // Added text input reference
 const userFileInput = document.getElementById("userFileInput");
 const garmentFileInput = document.getElementById("garmentFileInput");
 
-// ==========================================
-// Camera & UI Logic
-// ==========================================
 async function startCamera() {
     stopCameraStream();
-    logDebug("Requesting camera access...");
     try {
         currentStream = await navigator.mediaDevices.getUserMedia({
             video: { facingMode: useFacingMode, width: { ideal: 640 }, height: { ideal: 800 } },
             audio: false
         });
         video.srcObject = currentStream;
-        logDebug("Camera stream started successfully.");
     } catch (err) {
-        logError("Camera access failed", err);
+        console.error("Camera access failed: ", err);
         alert("Could not access device camera. Please upload a photo instead.");
         switchTab("upload");
     }
@@ -72,7 +47,6 @@ function stopCameraStream() {
     if (currentStream) {
         currentStream.getTracks().forEach(track => track.stop());
         currentStream = null;
-        logDebug("Camera stream stopped.");
     }
 }
 
@@ -86,7 +60,6 @@ btnCapture.addEventListener("click", () => {
     canvas.toBlob((blob) => {
         capturedBlob = blob;
         const imageUrl = URL.createObjectURL(blob);
-        logDebug("Photo captured from camera", { blobSize: blob.size });
         showPersonPreview(imageUrl);
         stopCameraStream();
     }, "image/jpeg", 0.95);
@@ -94,12 +67,10 @@ btnCapture.addEventListener("click", () => {
 
 btnFlipCamera.addEventListener("click", () => {
     useFacingMode = (useFacingMode === "user") ? "environment" : "user";
-    logDebug(`Flipping camera to: ${useFacingMode}`);
     startCamera();
 });
 
 function switchTab(target) {
-    logDebug(`Switching input tab to: ${target}`);
     if (target === "camera") {
         btnTabCamera.classList.add("active");
         btnTabUpload.classList.remove("active");
@@ -125,7 +96,6 @@ userFileInput.addEventListener("change", (e) => {
     if (file) {
         capturedBlob = file; 
         const imageUrl = URL.createObjectURL(file);
-        logDebug("User uploaded local photo file", { fileName: file.name, fileSize: file.size });
         showPersonPreview(imageUrl);
     }
 });
@@ -139,7 +109,6 @@ function showPersonPreview(url) {
 }
 
 btnResetPerson.addEventListener("click", () => {
-    logDebug("User reset personal photo");
     capturedBlob = null;
     personPreview.src = "";
     personPreviewContainer.classList.add("hidden");
@@ -154,11 +123,7 @@ btnResetPerson.addEventListener("click", () => {
     validateFormInputs();
 });
 
-garmentFileInput.addEventListener("change", () => {
-    const file = garmentFileInput.files[0];
-    if (file) logDebug("Garment file selected", { fileName: file.name, fileSize: file.size });
-    validateFormInputs();
-});
+garmentFileInput.addEventListener("change", () => validateFormInputs());
 
 function validateFormInputs() {
     const hasPerson = capturedBlob !== null;
@@ -166,29 +131,17 @@ function validateFormInputs() {
     btnGenerate.disabled = !(hasPerson && hasGarment);
 }
 
-// ==========================================
-// API Interaction Logic
-// ==========================================
 btnGenerate.addEventListener("click", async () => {
     if (!capturedBlob || garmentFileInput.files.length === 0) return;
 
-    logDebug("--- NEW TRY-ON JOB INITIATED ---");
-    
     const formData = new FormData();
     formData.append("user_id", DUMMY_USER_ID);
     formData.append("category", garmentCategory.value);
-    formData.append("garment_desc", garmentDescription.value); 
+    formData.append("garment_desc", garmentDescription.value); // Added text prompt appending
 
     const personFile = (capturedBlob instanceof File) ? capturedBlob : new File([capturedBlob], "capture.jpg", { type: "image/jpeg" });
     formData.append("person_image", personFile);
     formData.append("garment_image", garmentFileInput.files[0]);
-
-    logDebug("Payload prepared", { 
-        category: garmentCategory.value, 
-        prompt: garmentDescription.value,
-        personFile: personFile.name,
-        garmentFile: garmentFileInput.files[0].name
-    });
 
     btnGenerate.disabled = true;
     placeholderText.classList.add("hidden");
@@ -197,24 +150,16 @@ btnGenerate.addEventListener("click", async () => {
     loadingStatusText.innerText = "Transmitting image layers to server instance...";
 
     try {
-        logDebug(`Sending POST request to ${API_BASE_URL}/api/tryon`);
         const response = await fetch(`${API_BASE_URL}/api/tryon`, {
             method: "POST",
             body: formData
         });
 
-        if (!response.ok) {
-            const errText = await response.text();
-            logError(`POST /api/tryon failed with status ${response.status}`, errText);
-            throw new Error(`Server rejected upload (Status: ${response.status})`);
-        }
+        if (!response.ok) throw new Error("Server rejected upload submission payload");
 
         const initialJobData = await response.json();
-        logDebug("Job successfully registered in database", initialJobData);
-        
         pollJobStatus(initialJobData.id);
     } catch (err) {
-        logError("Submission Error", err.message);
         alert("Error executing job: " + err.message);
         resetOutputUi();
     }
@@ -222,39 +167,26 @@ btnGenerate.addEventListener("click", async () => {
 
 function pollJobStatus(jobId) {
     loadingStatusText.innerText = "AI processing job initialized. Waiting in queue...";
-    logDebug(`Initiating polling loop for Job ID: ${jobId}`);
     
-    let pollAttempts = 0;
-
     const intervalId = setInterval(async () => {
-        pollAttempts++;
         try {
-            logDebug(`Polling attempt #${pollAttempts}...`);
             const response = await fetch(`${API_BASE_URL}/api/tryon/${jobId}`);
-            
-            if (!response.ok) {
-                const errText = await response.text();
-                logError(`Polling GET /api/tryon/${jobId} failed`, { status: response.status, body: errText });
-                return; // Don't crash, wait for next interval to try again
-            }
+            if (!response.ok) return;
 
             const job = await response.json();
-            logDebug(`Poll response received`, { status: job.status });
             
             if (job.status === "processing") {
-                loadingStatusText.innerText = `FASHN.ai is currently rendering your clothing swap (Attempt ${pollAttempts})...`;
+                loadingStatusText.innerText = "FASHN.ai is currently rendering your clothing swap (10-30s)...";
             } else if (job.status === "completed") {
-                logDebug("Job completed successfully!", { result_url: job.result_image_url });
                 clearInterval(intervalId);
                 displayFinalImage(job.result_image_url);
             } else if (job.status === "failed") {
-                logError("Job marked as failed by the backend server.");
                 clearInterval(intervalId);
                 alert("The AI model was unable to map this design configuration properly.");
                 resetOutputUi();
             }
         } catch (err) {
-            logError("Network error during polling", err.message);
+            console.error("Error checking execution state: ", err);
         }
     }, 3000); 
 }
@@ -263,18 +195,15 @@ function displayFinalImage(url) {
     loadingEngine.classList.add("hidden");
     finalOutputImage.src = url;
     finalOutputImage.classList.remove("hidden");
-    logDebug("Final output image rendered to UI");
     validateFormInputs();
 }
 
 function resetOutputUi() {
     loadingEngine.classList.add("hidden");
     placeholderText.classList.remove("hidden");
-    btnGenerate.disabled = false;
-    logDebug("UI reset after error");
+    validateFormInputs();
 }
 
 window.addEventListener("load", () => {
-    logDebug("Application loaded. Starting default input view.");
     startCamera();
 });
