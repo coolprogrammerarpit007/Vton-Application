@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr,constr
 from datetime import datetime
 from typing import Optional
 from app.models import GarmentCategory, JobStatus
@@ -7,6 +7,7 @@ from app.models import GarmentCategory, JobStatus
 class UserCreate(BaseModel):
     username: str
     email: EmailStr
+    password: constr(min_length=8, max_length=72)
 
 class UserOut(BaseModel):
     id: int

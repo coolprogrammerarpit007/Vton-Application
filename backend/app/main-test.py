@@ -15,7 +15,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from .auth import router as auth_router
 from fastapi.staticfiles import StaticFiles
 from .closet import router as closet_router
-from .auth import get_current_user
 
 
 
@@ -99,56 +98,41 @@ def read_root():
 
 @app.post("/api/tryon", response_model=schemas.TryOnJobOut)
 async def create_tryon_job(
+    user_id: int = Form(...),
     category: models.GarmentCategory = Form(...),
     garment_desc: Optional[str] = Form(""), 
     person_image: UploadFile = File(...),
-    garment_image: Optional[UploadFile] = File(None), # Optional now
-    closet_item_id: Optional[int] = Form(None),       # New parameter
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user) # Using Auth Token
+    garment_image: UploadFile = File(...),
+    db: Session = Depends(get_db)
 ):
-    logger.info(f"Incoming try-on request | User ID: {current_user.id} | Category: {category.value}")
-    base_url = "http://127.0.0.1:8000"
+    logger.info(f"Incoming try-on request | User ID: {user_id} | Category: {category.value}")
 
-    # 1. Determine Garment Source
-    if closet_item_id:
-        item = db.query(models.ClosetItem).filter(
-            models.ClosetItem.id == closet_item_id,
-            models.ClosetItem.user_id == current_user.id
-        ).first()
-        if not item:
-            raise HTTPException(status_code=404, detail="Closet item not found")
-        
-        # Safely construct the URL from the DB file path
-        path_part = item.file_path.replace("\\", "/") 
-        if not path_part.startswith("/"):
-            path_part = "/" + path_part
-        garment_url = f"{base_url}{path_part}"
-        logger.info(f"Using closet item ID: {closet_item_id}")
+    # 1. Verify user profile exists
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        logger.warning(f"Request rejected: User ID {user_id} not found in database.")
+        raise HTTPException(status_code=404, detail="User profile target not found")
 
-    elif garment_image:
-        try:
-            garment_filename = save_upload_file(garment_image)
-            garment_url = f"{base_url}/static_uploads/{garment_filename}"
-            logger.info(f"New garment file saved: {garment_filename}")
-        except Exception as e:
-            logger.error("Disk Write Error: Failed to save garment image", exc_info=True)
-            raise HTTPException(status_code=500, detail="Error saving garment image")
-    else:
-        raise HTTPException(status_code=400, detail="Must provide either garment_image or closet_item_id")
-
-    # 2. Process Person Image
+    # 2. Save binary files down to disk storage safely
     try:
         person_filename = save_upload_file(person_image)
-        person_url = f"{base_url}/static_uploads/{person_filename}"
+        garment_filename = save_upload_file(garment_image)
+        logger.info(f"Files saved successfully: {person_filename}, {garment_filename}")
     except Exception as e:
-        logger.error("Disk Write Error: Failed to save person image", exc_info=True)
-        raise HTTPException(status_code=500, detail="Error saving person image")
+        logger.error(f"Disk Write Error: Failed to save uploaded images.", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error while saving files to disk.")
+    
+    # ==========================================
+    # PRODUCTION ROUTING APPLIED
+    # ==========================================
+    base_url = "http://127.0.0.1:8000//static_uploads" 
+    person_url = f"{base_url}/{person_filename}"
+    garment_url = f"{base_url}/{garment_filename}"
 
     # 3. Create entry in local tracking database
     try:
         db_job = models.TryOnJob(
-            user_id=current_user.id,
+            user_id=user_id,
             category=category,
             user_image_url=person_url,
             garment_image_url=garment_url,
@@ -159,11 +143,11 @@ async def create_tryon_job(
         db.refresh(db_job)
         logger.info(f"Database record created | Job ID: {db_job.id}")
     except Exception as e:
-        db.rollback()
-        logger.error("Database Transaction Error", exc_info=True)
+        db.rollback() # Undo the transaction to prevent database corruption
+        logger.error("Database Transaction Error: Could not create TryOnJob record.", exc_info=True)
         raise HTTPException(status_code=500, detail="Database error while saving job state.")
 
-    # 4. Trigger external generation payload
+    # 4. Trigger external generation payload asynchronously
     try:
         logger.info(f"Dispatching Job ID {db_job.id} to FASHN.ai servers...")
         fashn_job_id = await trigger_vton_job(
@@ -172,16 +156,22 @@ async def create_tryon_job(
             category=category.value, 
             garment_desc=garment_desc
         )
+        
+        # Update the database with the external tracking ID
         db_job.fashn_job_id = fashn_job_id
         db_job.status = models.JobStatus.PROCESSING
         db.commit()
+        logger.info(f"FASHN.ai successfully received request | FASHN Tracker ID: {fashn_job_id}")
+        
     except Exception as e:
+        # If FASHN fails (e.g., 502 Bad Gateway), we mark our local database job as FAILED
         db_job.status = models.JobStatus.FAILED
         db.commit()
         logger.error(f"FASHN API Integration Error on Job ID {db_job.id}: {str(e)}", exc_info=True)
         raise HTTPException(status_code=502, detail=f"Failed to initiate AI core: {str(e)}")
 
     return db_job
+
 
 @app.get("/api/tryon/{job_id}", response_model=schemas.TryOnJobOut)
 async def get_tryon_status(job_id: int, db: Session = Depends(get_db)):

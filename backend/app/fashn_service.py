@@ -24,9 +24,25 @@ async def trigger_vton_job(model_image_url: str, garment_image_url: str, categor
         }
     }
     
-    # If a string prompt value exists, inject it into the inputs under the official key 'prompt'
+    # 2. CATEGORY UTILIZATION: Prompt Augmentation
+    # We translate your category (tops, bottoms, one-pieces) into explicit AI instructions
+    category_instruction = ""
+    if category == "tops":
+        category_instruction = "worn on the upper body as a top"
+    elif category == "bottoms":
+        category_instruction = "worn on the lower body as pants/skirt"
+    elif category == "one-pieces":
+        category_instruction = "worn as a full body one-piece dress or suit"
+    
+    # 3. Combine the auto-instruction with the user's manual description (if any)
+    final_prompt = category_instruction
     if garment_desc and garment_desc.strip():
-        payload["inputs"]["prompt"] = garment_desc
+        # If the user typed something like "tucked in", we append it
+        final_prompt = f"{category_instruction}, {garment_desc.strip()}"
+        
+    # Inject the enhanced prompt into the payload
+    if final_prompt:
+        payload["inputs"]["prompt"] = final_prompt
 
     async with httpx.AsyncClient() as client:
         response = await client.post(FASHN_API_URL, json=payload, headers=headers, timeout=30.0)

@@ -71,10 +71,6 @@ const btnUploadToCloset = document.getElementById("btnUploadToCloset");
 const closetFileInput = document.getElementById("closetFileInput");
 const closetItemLabel = document.getElementById("closetItemLabel");
 
-const selectedGarmentPreview = document.getElementById("selectedGarmentPreview");
-const garmentPreviewImg = document.getElementById("garmentPreviewImg");
-const btnRemoveGarment = document.getElementById("btnRemoveGarment");
-const garmentInputGroup = document.getElementById("garmentInputGroup");
 
 
 // ==========================================
@@ -341,35 +337,6 @@ document.getElementById("btnSelectFromCloset").addEventListener("click", () => {
     alert("In Phase 2, selecting an image here will auto-fill the Try-On garment data!");
 });
 
-function selectClosetItem(item) {
-    selectedClosetItemId = item.id;
-    
-    // Show the preview image in the studio
-    garmentPreviewImg.src = `${API_BASE_URL}${item.image_url}`;
-    selectedGarmentPreview.classList.remove("hidden");
-    
-    // Hide the file upload input group
-    garmentInputGroup.classList.add("hidden");
-    
-    // Automatically take the user back to the Studio tab
-    switchMainView('studio');
-    validateFormInputs();
-}
-
-btnRemoveGarment.addEventListener("click", () => {
-    // Reset state and restore UI
-    selectedClosetItemId = null;
-    selectedGarmentPreview.classList.add("hidden");
-    garmentInputGroup.classList.remove("hidden");
-    garmentFileInput.value = ""; 
-    validateFormInputs();
-});
-
-// Update the closet button to simply switch views (remove the alert)
-document.getElementById("btnSelectFromCloset").addEventListener("click", () => {
-    switchMainView('closet');
-});
-
 function validateFormInputs() {
     const hasPerson = capturedBlob !== null;
     const hasGarment = garmentFileInput.files.length > 0 || selectedClosetItemId !== null;
@@ -438,7 +405,7 @@ function pollJobStatus(jobId) {
             const job = await response.json();
             
             if (job.status === "processing") {
-                loadingStatusText.innerText = `Microprixs AI rendering (Attempt ${pollAttempts})...`;
+                loadingStatusText.innerText = `FASHN.ai rendering (Attempt ${pollAttempts})...`;
             } else if (job.status === "completed") {
                 clearInterval(intervalId);
                 displayFinalImage(job.result_image_url);
@@ -531,7 +498,12 @@ async function loadClosetGallery() {
             const img = document.createElement("img");
             img.src = `${API_BASE_URL}${item.image_url}`;
             img.className = "gallery-item";
-            img.onclick = () => selectClosetItem(item);
+            img.onclick = () => {
+                // Logic to select this item for try-on
+                selectedClosetItemId = item.id;
+                alert(`Selected: ${item.label}`);
+                switchMainView('studio');
+            };
             gallery.appendChild(img);
         });
     } catch (e) {

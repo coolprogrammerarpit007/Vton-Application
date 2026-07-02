@@ -1,0 +1,3 @@
+2026-07-02 13:12:55,608 - app.auth - WARNING - Token validation failed: JWT decoding error (Not enough segments)
+2026-07-02 13:13:37,235 - app.auth - INFO - Registration attempt for email: arpit.mishra.out@gmail.com
+2026-07-02 13:13:37,257 - app.auth - ERROR - Error during user registration for arpit.mishra.out@gmail.com: password cannot be longer than 72 bytes, truncate manually if necessary (e.g. my_password[:72])
