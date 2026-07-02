@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .auth import router as auth_router
 from fastapi.staticfiles import StaticFiles
 from .closet import router as closet_router
+from .outfit import router as outfit_router
 from .auth import get_current_user
 
 
@@ -64,6 +65,7 @@ except Exception as e:
 app = FastAPI(title="Virtual Try-On API Studio")
 app.include_router(auth_router)
 app.include_router(closet_router)
+app.include_router(outfit_router)
 app.mount("/static_uploads", StaticFiles(directory="static_uploads"), name="static_uploads")
 
 
@@ -108,7 +110,7 @@ async def create_tryon_job(
     current_user: models.User = Depends(get_current_user) # Using Auth Token
 ):
     logger.info(f"Incoming try-on request | User ID: {current_user.id} | Category: {category.value}")
-    base_url = "http://127.0.0.1:8000"
+    base_url = "https://vton-backend.falcondetectives.com"  # Update this to your deployed backend URL
 
     # 1. Determine Garment Source
     if closet_item_id:

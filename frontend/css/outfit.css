@@ -1,0 +1,41 @@
+/* css/outfit.css */
+.outfit-slot {
+    margin-bottom: 20px; 
+    border: 2px dashed #cbd5e0; 
+    padding: 15px; 
+    border-radius: 8px;
+    background-color: #f7fafc;
+    transition: all 0.2s ease;
+}
+
+.outfit-slot:hover {
+    border-color: #3182ce;
+}
+
+.outfit-slot h4 {
+    margin-top: 0;
+    margin-bottom: 10px;
+    color: #4a5568;
+    font-size: 0.95rem;
+}
+
+.outfit-slot .preview-box {
+    margin-bottom: 10px;
+}
+
+.outfit-slot img {
+    width: 100px; 
+    height: 100px; 
+    object-fit: contain;
+    border-radius: 6px;
+    border: 1px solid #e2e8f0;
+    background: white;
+}
+
+.status-box {
+    padding: 15px; 
+    background: #edf2f7; 
+    border-radius: 8px;
+    border-left: 4px solid #a0aec0;
+    font-weight: 600;
+}

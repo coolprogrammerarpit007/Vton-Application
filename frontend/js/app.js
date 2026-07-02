@@ -1,9 +1,10 @@
-const API_BASE_URL = "http://127.0.0.1:8000"; 
+const API_BASE_URL = "https://vton-backend.falcondetectives.com"; // Update this to your deployed backend URL
 const DEBUG_MODE = true; 
 
 // --- NEW STATE VARIABLES ---
 let authToken = localStorage.getItem("vton_token");
 let selectedClosetItemId = null;
+let closetSelectionMode = 'studio'; // NEW: Tracks why the closet is open
 let isLoginMode = true;
 let currentStream = null;
 let useFacingMode = "user"; 
@@ -133,31 +134,43 @@ document.getElementById("closeAuthModal").addEventListener("click", () => {
     switchMainView('studio');
 });
 
+// ***************** Outfit Builder *****************
+const navOutfit = document.getElementById("navOutfit");
+const outfitViewPanel = document.getElementById("outfitViewPanel");
+
+navOutfit.addEventListener("click", () => switchMainView('outfit'));
+
+
 function switchMainView(view) {
     studioView.classList.add("hidden");
     closetViewPanel.classList.add("hidden");
     historyViewPanel.classList.add("hidden");
+    outfitViewPanel.classList.add("hidden");
 
     navStudio.classList.remove("active");
     navCloset.classList.remove("active");
     navHistory.classList.remove("active");
+    navOutfit.classList.remove("active");
 
     if (view === 'studio') {
         studioView.classList.remove("hidden");
         navStudio.classList.add("active");
-        if (!capturedBlob && btnTabCamera.classList.contains("active")) {
-            startCamera();
-        }
+        if (!capturedBlob && btnTabCamera.classList.contains("active")) startCamera();
     } else if (view === 'closet') {
         stopCameraStream();
         closetViewPanel.classList.remove("hidden");
         navCloset.classList.add("active");
-        // Future Phase 2 logic: fetchClosetItems();
+        loadClosetGallery(); 
     } else if (view === 'history') {
         stopCameraStream();
         historyViewPanel.classList.remove("hidden");
         navHistory.classList.add("active");
-        // Future Phase 5 logic: fetchHistoryItems();
+    } else if (view === 'outfit') {
+        stopCameraStream();
+        outfitViewPanel.classList.remove("hidden");
+        navOutfit.classList.add("active");
+        // Trigger validation from outfit.js
+        if (typeof validateOutfitForm === "function") validateOutfitForm();
     }
 }
 
@@ -338,7 +351,7 @@ garmentFileInput.addEventListener("change", () => {
 // Mock functionality for selecting from closet (will hook to actual data in Phase 2)
 document.getElementById("btnSelectFromCloset").addEventListener("click", () => {
     switchMainView('closet');
-    alert("In Phase 2, selecting an image here will auto-fill the Try-On garment data!");
+    alert("Closet selection is now available! Click on an item to select it for try-on.");
 });
 
 function selectClosetItem(item) {
@@ -367,6 +380,7 @@ btnRemoveGarment.addEventListener("click", () => {
 
 // Update the closet button to simply switch views (remove the alert)
 document.getElementById("btnSelectFromCloset").addEventListener("click", () => {
+    closetSelectionMode = 'studio'; // Tell the closet it's for the studio
     switchMainView('closet');
 });
 
@@ -515,6 +529,7 @@ btnUploadToCloset.addEventListener("click", async () => {
 
 
 // Add this helper function to your app.js
+// Update the gallery item generation
 async function loadClosetGallery() {
     const gallery = document.getElementById("closetGallery");
     gallery.innerHTML = "<p>Loading your closet...</p>";
@@ -524,18 +539,25 @@ async function loadClosetGallery() {
             headers: { "Authorization": `Bearer ${authToken}` }
         });
         const items = await response.json();
-        console.log("DEBUG: Closet items received:", items);
 
-        gallery.innerHTML = ""; // Clear loader
+        gallery.innerHTML = ""; 
         items.forEach(item => {
             const img = document.createElement("img");
             img.src = `${API_BASE_URL}${item.image_url}`;
             img.className = "gallery-item";
-            img.onclick = () => selectClosetItem(item);
+            
+            // CONTEXT AWARE CLICK HANDLER
+            img.onclick = () => {
+                if (closetSelectionMode === 'studio') {
+                    selectClosetItem(item); // Existing Phase 3 logic
+                } else {
+                    // Call the Phase 4 router defined in outfit.js
+                    routeOutfitSelection(item, closetSelectionMode);
+                }
+            };
             gallery.appendChild(img);
         });
     } catch (e) {
-        logError("Failed to load closet", e);
         gallery.innerHTML = "<p>Error loading closet items.</p>";
     }
 }

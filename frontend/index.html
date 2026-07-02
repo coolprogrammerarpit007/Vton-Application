@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI Virtual Try-On Studio</title>
     <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="css/outfit.css">
 </head>
 <body>
     <div class="container">
@@ -15,6 +16,7 @@
                     
             <div id="main-nav" class="tab-system hidden" style="max-width: 400px; margin: 15px auto 0;">
                 <button id="navStudio" class="tab-btn active">Studio</button>
+                <button id="navOutfit" class="tab-btn">Outfit Builder</button>
                 <button id="navCloset" class="tab-btn">My Closet</button>
                 <button id="navHistory" class="tab-btn">History</button>
                 <button id="btnLogout" class="tab-btn danger-btn" style="margin-top:0;">Logout</button>
@@ -103,6 +105,60 @@
             </div>
         </main>
 
+        <!-- NEW: Phase 4 Outfit Builder -->
+        <main id="outfitViewPanel" class="workspace hidden">
+            <div class="control-panel">
+                <div class="card">
+                    <h3>1. Assemble Your Layers</h3>
+                    <p class="hint" style="margin-bottom: 15px;">Select items from your closet to build a full outfit.</p>
+                    
+                    <div class="outfit-slot">
+                        <h4>Top Wear (Shirt/T-shirt)</h4>
+                        <div id="outfitTopPreview" class="preview-box hidden">
+                            <img id="outfitTopImg" src="" alt="Top">
+                            <button id="btnRemoveOutfitTop" class="danger-btn">Remove</button>
+                        </div>
+                        <button id="btnSelectOutfitTop" class="secondary-btn">Select Top</button>
+                    </div>
+
+                    <div class="outfit-slot">
+                        <h4>Bottom Wear (Pants/Jeans)</h4>
+                        <div id="outfitBottomPreview" class="preview-box hidden">
+                            <img id="outfitBottomImg" src="" alt="Bottom">
+                            <button id="btnRemoveOutfitBottom" class="danger-btn">Remove</button>
+                        </div>
+                        <button id="btnSelectOutfitBottom" class="secondary-btn">Select Bottom</button>
+                    </div>
+
+                    <div class="outfit-slot">
+                        <h4>Outerwear (Jacket/Coat)</h4>
+                        <div id="outfitOuterwearPreview" class="preview-box hidden">
+                            <img id="outfitOuterwearImg" src="" alt="Outerwear">
+                            <button id="btnRemoveOutfitOuterwear" class="danger-btn">Remove</button>
+                        </div>
+                        <button id="btnSelectOutfitOuterwear" class="secondary-btn">Select Outerwear</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="output-panel">
+                <div class="card result-card">
+                    <h3>2. Generate Outfit</h3>
+                    
+                    <div id="outfitPersonCheck" class="status-box" style="margin-bottom: 20px;">
+                        <span id="outfitPersonStatus">❌ Base photo missing. Please capture one in the Studio tab first.</span>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="outfitPrompt">Overall Styling Prompt (Optional):</label>
+                        <input type="text" id="outfitPrompt" placeholder="e.g., streetwear style, jacket open">
+                    </div>
+
+                    <button id="btnGenerateOutfit" class="action-btn" disabled>Generate Full Outfit</button>
+                </div>
+            </div>
+        </main>
+
         <main id="closetViewPanel" class="workspace hidden">
             <div class="card" style="grid-column: 1 / -1;">
                 <h3>My Digital Closet</h3>
@@ -157,5 +213,6 @@
 
     <canvas id="captureCanvas" class="hidden"></canvas>
     <script src="js/app.js"></script>
+    <script src="js/outfit.js"></script>
 </body>
 </html>

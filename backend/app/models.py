@@ -4,6 +4,9 @@ from sqlalchemy.sql import func
 import enum
 from app.database import Base
 
+
+
+
 class GarmentCategory(str, enum.Enum):
     TOPS = "tops"
     BOTTOMS = "bottoms"
@@ -55,3 +58,46 @@ class ClosetItem(Base):
     file_path = Column(String(255), nullable=False)   # Stores where the image lives on the server
     label = Column(String(100), default="Untitled Garment")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    
+    
+    
+# 1. Define the Layer Categories
+class OutfitLayer(str, enum.Enum):
+    TOP = "top"
+    BOTTOM = "bottom"
+    OUTERWEAR = "outerwear"
+    ACCESSORY = "accessory"
+    FOOTWEAR = "footwear"
+    
+    
+# 2. Parent Table: Tracks the generation request
+class OutfitJob(Base):
+    __tablename__ = "outfit_jobs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    
+    # ADDED LENGTH LIMITS TO STRINGS
+    person_image_url = Column(String(255)) 
+    status = Column(Enum(JobStatus), default=JobStatus.PENDING)
+    fashn_job_id = Column(String(255), nullable=True)
+    result_image_url = Column(String(255), nullable=True)
+    
+    # Gave the prompt a bit more room just in case it gets detailed
+    styling_prompt = Column(String(1024), nullable=True) 
+
+    # Links to the multiple garments
+    garments = relationship("OutfitGarment", back_populates="outfit_job", cascade="all, delete-orphan")
+
+# 3. Child Table: Maps closet items to the specific job
+class OutfitGarment(Base):
+    __tablename__ = "outfit_garments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    outfit_job_id = Column(Integer, ForeignKey("outfit_jobs.id"))
+    closet_item_id = Column(Integer, ForeignKey("closet_items.id"))
+    layer_category = Column(Enum(OutfitLayer))
+
+    outfit_job = relationship("OutfitJob", back_populates="garments")
+    closet_item = relationship("ClosetItem") # Allows us to fetch the actual file path later
