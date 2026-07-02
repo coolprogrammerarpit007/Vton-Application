@@ -10,3 +10,5 @@
 2026-07-02 18:01:05,893 - INFO - app.main - Mounted static uploads directory at: D:\vton-app\backend\static_uploads
 2026-07-02 18:06:36,207 - INFO - app.main - Database schemas initialized successfully.
 2026-07-02 18:06:36,226 - INFO - app.main - Mounted static uploads directory at: D:\vton-app\backend\static_uploads
+2026-07-02 18:06:51,174 - INFO - app.main - Database schemas initialized successfully.
+2026-07-02 18:06:51,192 - INFO - app.main - Mounted static uploads directory at: D:\vton-app\backend\static_uploads
