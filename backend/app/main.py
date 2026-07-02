@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from .closet import router as closet_router
 from .outfit import router as outfit_router
 from .auth import get_current_user
+from .history import router as history_router
 
 
 
@@ -66,6 +67,7 @@ app = FastAPI(title="Virtual Try-On API Studio")
 app.include_router(auth_router)
 app.include_router(closet_router)
 app.include_router(outfit_router)
+app.include_router(history_router)
 app.mount("/static_uploads", StaticFiles(directory="static_uploads"), name="static_uploads")
 
 

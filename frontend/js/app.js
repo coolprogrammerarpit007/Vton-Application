@@ -60,7 +60,7 @@ const mainNav = document.getElementById("main-nav");
 const studioView = document.getElementById("studioView");
 const closetViewPanel = document.getElementById("closetViewPanel");
 const historyViewPanel = document.getElementById("historyViewPanel");
-const btnSaveHistory = document.getElementById("btnSaveHistory");
+
 
 // Navigation Buttons
 const navStudio = document.getElementById("navStudio");
@@ -165,6 +165,9 @@ function switchMainView(view) {
         stopCameraStream();
         historyViewPanel.classList.remove("hidden");
         navHistory.classList.add("active");
+
+        // TRIGGER THE FETCH WHEN TAB IS OPENED
+        loadHistoryGallery();
     } else if (view === 'outfit') {
         stopCameraStream();
         outfitViewPanel.classList.remove("hidden");
@@ -241,6 +244,85 @@ btnLogout.addEventListener("click", () => {
     initApp();
 });
 
+
+// --- FETCH HISTORY GALLERY ---
+async function loadHistoryGallery() {
+    const gallery = document.getElementById("historyGallery");
+    gallery.innerHTML = "<p>Loading your history...</p>";
+
+    try {
+        const response = await fetch(`${API_BASE_URL}/api/history/`, {
+            headers: { "Authorization": `Bearer ${authToken}` }
+        });
+        const items = await response.json();
+
+        if (items.length === 0) {
+            gallery.innerHTML = "<p>Your past AI outfits will appear here.</p>";
+            return;
+        }
+
+        gallery.innerHTML = "";
+        items.forEach(item => {
+            const img = document.createElement("img");
+            
+           
+            if (item.image_url.startsWith('http')) {
+                // If it's a full URL (CDN), use it exactly as is
+                img.src = item.image_url;
+            } else {
+                // If it's a relative path, prepend your API base
+                img.src = `${API_BASE_URL}${item.image_url}`;
+            }
+            // --------------------------------------------------------
+
+            img.className = "gallery-item";
+            img.onclick = () => window.open(img.src, "_blank");
+            gallery.appendChild(img);
+        });
+    } catch (e) {
+        console.error("Failed to load history", e);
+        gallery.innerHTML = "<p>Error loading history items.</p>";
+    }
+}
+
+
+
+// --- HISTORY SAVING LOGIC ---
+const btnSaveHistory = document.getElementById("btnSaveHistory");
+
+btnSaveHistory.addEventListener("click", async () => {
+    // Get the URL of the currently displayed generated image
+    const currentImageUrl = document.getElementById("finalOutputImage").src;
+    
+    // Convert the full absolute URL back to a relative path for safe DB storage
+    const relativeUrl = currentImageUrl.replace(API_BASE_URL, "");
+
+    btnSaveHistory.disabled = true;
+    btnSaveHistory.innerText = "Saving...";
+
+    try {
+        const response = await fetch(`${API_BASE_URL}/api/history/save`, {
+            method: "POST",
+            headers: {
+                "Authorization": `Bearer ${authToken}`,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({ image_url: relativeUrl })
+        });
+
+        if (response.ok) {
+            btnSaveHistory.innerText = "Saved! ✔️";
+            btnSaveHistory.style.backgroundColor = "#48bb78"; // Turn green for success
+        } else {
+            throw new Error("Failed to save.");
+        }
+    } catch (err) {
+        console.error("History Save Error:", err);
+        alert("Could not save to history.");
+        btnSaveHistory.disabled = false;
+        btnSaveHistory.innerText = "Save to History";
+    }
+});
 
 // ==========================================
 // Camera & UI Logic (Original Logic Retained)

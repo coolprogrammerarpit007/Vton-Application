@@ -2,6 +2,7 @@ from sqlalchemy import Column, Integer, String, Enum, ForeignKey, DateTime, func
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 import enum
+from datetime import datetime
 from app.database import Base
 
 
@@ -101,3 +102,16 @@ class OutfitGarment(Base):
 
     outfit_job = relationship("OutfitJob", back_populates="garments")
     closet_item = relationship("ClosetItem") # Allows us to fetch the actual file path later
+    
+    
+    
+class HistoryItem(Base):
+    __tablename__ = "history_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    image_url = Column(String(255))
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Establish relationship to the User model if needed
+    owner = relationship("User")
