@@ -394,14 +394,33 @@ function switchTab(target) {
 btnTabCamera.addEventListener("click", () => switchTab("camera"));
 btnTabUpload.addEventListener("click", () => switchTab("upload"));
 
-userFileInput.addEventListener("change", (e) => {
+// Inside your existing userFileInput.addEventListener
+userFileInput.addEventListener("change", async (e) => {
     const file = e.target.files[0];
     if (file) {
-        capturedBlob = file; 
-        showPersonPreview(URL.createObjectURL(file));
+        const url = URL.createObjectURL(file);
+        
+        // --- NEW: Validation Step ---authToken
+        const tempImg = new Image();
+        tempImg.src = url;
+        // Inside your app.js
+tempImg.onload = async () => {
+    console.log("App: Image loaded, starting validation...");
+    const result = await validateImagePose(tempImg);
+    console.log("App: Validation result received:", result);
+    
+    if (!result.valid) {
+        alert("Alert Triggered: " + result.msg); // Force an alert to see if this branch executes
+        userFileInput.value = ""; 
+        return;
+    }
+    
+    console.log("App: Validation passed, proceeding to preview.");
+    capturedBlob = file;
+    showPersonPreview(url);
+};
     }
 });
-
 function showPersonPreview(url) {
     personPreview.src = url;
     cameraView.classList.add("hidden");
