@@ -78,6 +78,14 @@ const btnRemoveGarment = document.getElementById("btnRemoveGarment");
 const garmentInputGroup = document.getElementById("garmentInputGroup");
 
 
+//  Multi Angle View
+
+const nav360 = document.getElementById("nav360");
+const view360Panel = document.getElementById("view360Panel");
+
+nav360.addEventListener("click", () => switchMainView('360'));
+
+
 // ==========================================
 // Application Initialization & SPA Routing
 // ==========================================
@@ -140,39 +148,35 @@ const outfitViewPanel = document.getElementById("outfitViewPanel");
 
 navOutfit.addEventListener("click", () => switchMainView('outfit'));
 
-
 function switchMainView(view) {
-    studioView.classList.add("hidden");
-    closetViewPanel.classList.add("hidden");
-    historyViewPanel.classList.add("hidden");
-    outfitViewPanel.classList.add("hidden");
+    const panels = [studioView, closetViewPanel, historyViewPanel, outfitViewPanel, view360Panel];
+    const navs = [navStudio, navCloset, navHistory, navOutfit, nav360];
 
-    navStudio.classList.remove("active");
-    navCloset.classList.remove("active");
-    navHistory.classList.remove("active");
-    navOutfit.classList.remove("active");
+    navs.forEach(nav => nav.classList.remove("active"));
+    panels.forEach(panel => panel.classList.add("hidden"));
 
     if (view === 'studio') {
         studioView.classList.remove("hidden");
         navStudio.classList.add("active");
         if (!capturedBlob && btnTabCamera.classList.contains("active")) startCamera();
+    } else if (view === '360') {
+        stopCameraStream();
+        view360Panel.classList.remove("hidden");
+        nav360.classList.add("active");
     } else if (view === 'closet') {
         stopCameraStream();
         closetViewPanel.classList.remove("hidden");
         navCloset.classList.add("active");
-        loadClosetGallery(); 
+        loadClosetGallery();
     } else if (view === 'history') {
         stopCameraStream();
         historyViewPanel.classList.remove("hidden");
         navHistory.classList.add("active");
-
-        // TRIGGER THE FETCH WHEN TAB IS OPENED
         loadHistoryGallery();
     } else if (view === 'outfit') {
         stopCameraStream();
         outfitViewPanel.classList.remove("hidden");
         navOutfit.classList.add("active");
-        // Trigger validation from outfit.js
         if (typeof validateOutfitForm === "function") validateOutfitForm();
     }
 }
@@ -650,7 +654,9 @@ async function loadClosetGallery() {
             // CONTEXT AWARE CLICK HANDLER
             img.onclick = () => {
                 if (closetSelectionMode === 'studio') {
-                    selectClosetItem(item); // Existing Phase 3 logic
+                    selectClosetItem(item); // Route to standard Studio
+                } else if (closetSelectionMode === '360') {
+                    selectClosetItem360(item); // NEW: Route to 360° Studio
                 } else {
                     // Call the Phase 4 router defined in outfit.js
                     routeOutfitSelection(item, closetSelectionMode);
@@ -666,6 +672,212 @@ async function loadClosetGallery() {
 // Update your switchMainView(view) logic to call this function:
 // ... inside 'else if (view === 'closet')' ...
     loadClosetGallery(); // <-- ADD THIS CALL
+
+
+// ==========================================
+// Phase 5: 360° Multi-Angle Logic
+// ==========================================
+let capturedAngles = { front: null, side: null, back: null };
+let generatedResults = []; 
+let currentCarouselIndex = 0;
+let selectedClosetItemId360 = null;
+
+const btnGenerate360 = document.getElementById("btnGenerate360");
+
+// Update Validation State
+function update360State() {
+    const hasAtLeastOneAngle = capturedAngles.front || capturedAngles.side || capturedAngles.back;
+    btnGenerate360.disabled = !(hasAtLeastOneAngle && selectedClosetItemId360);
+}
+
+// Bind the 3 upload slots
+['front', 'side', 'back'].forEach(angle => {
+    const inputEl = document.getElementById(`userFile${angle.charAt(0).toUpperCase() + angle.slice(1)}`);
+    const previewEl = document.getElementById(`preview${angle.charAt(0).toUpperCase() + angle.slice(1)}`);
+    
+    if (inputEl) {
+        inputEl.addEventListener("change", async (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                const url = URL.createObjectURL(file);
+                const tempImg = new Image();
+                tempImg.src = url;
+                
+                tempImg.onload = async () => {
+                    inputEl.disabled = true;
+                    // Uses the upgraded context-aware validator
+                    // const result = await validateImagePose(tempImg, angle); 
+                    
+                    // if (!result.valid) {
+                    //     alert(`Validation Failed for ${angle}: ` + result.msg);
+                    //     inputEl.value = ""; 
+                    //     inputEl.disabled = false;
+                    //     return;
+                    // }
+                    
+                    capturedAngles[angle] = file;
+                    previewEl.src = url;
+                    previewEl.classList.remove("hidden");
+                    inputEl.classList.add("hidden");
+                    document.getElementById("btnReset360").classList.remove("hidden");
+                    inputEl.disabled = false;
+                    update360State();
+                };
+            }
+        });
+    }
+});
+
+// Reset Angles
+document.getElementById("btnReset360").addEventListener("click", () => {
+    capturedAngles = { front: null, side: null, back: null };
+    ['front', 'side', 'back'].forEach(angle => {
+        const titleCase = angle.charAt(0).toUpperCase() + angle.slice(1);
+        document.getElementById(`preview${titleCase}`).classList.add("hidden");
+        document.getElementById(`preview${titleCase}`).src = "";
+        document.getElementById(`userFile${titleCase}`).value = "";
+        document.getElementById(`userFile${titleCase}`).classList.remove("hidden");
+    });
+    document.getElementById("btnReset360").classList.add("hidden");
+    update360State();
+});
+
+// Closet Selection for 360
+document.getElementById("btnSelectFromCloset360").addEventListener("click", () => {
+    closetSelectionMode = '360';
+    switchMainView('closet');
+});
+
+// You'll need to add a hook in your closetGallery onclick router:
+// if (closetSelectionMode === '360') selectClosetItem360(item);
+
+function selectClosetItem360(item) {
+    selectedClosetItemId360 = item.id;
+    document.getElementById("garmentPreviewImg360").src = `${API_BASE_URL}${item.image_url}`;
+    document.getElementById("selectedGarmentPreview360").classList.remove("hidden");
+    document.getElementById("btnSelectFromCloset360").classList.add("hidden");
+    switchMainView('360');
+    update360State();
+}
+
+document.getElementById("btnRemoveGarment360").addEventListener("click", () => {
+    selectedClosetItemId360 = null;
+    document.getElementById("selectedGarmentPreview360").classList.add("hidden");
+    document.getElementById("btnSelectFromCloset360").classList.remove("hidden");
+    update360State();
+});
+
+// The Promise.all() Generation logic
+btnGenerate360.addEventListener("click", async () => {
+    btnGenerate360.disabled = true;
+    document.getElementById("placeholderText360").classList.add("hidden");
+    document.getElementById("carouselContainer").classList.add("hidden");
+    document.getElementById("carouselControls").classList.add("hidden");
+    document.getElementById("loadingEngine360").classList.remove("hidden");
+    document.getElementById("loadingStatusText360").innerText = "Initiating concurrent batch orchestration...";
+
+    generatedResults = [];
+    const activeAngles = Object.keys(capturedAngles).filter(key => capturedAngles[key] !== null);
+    
+    try {
+        const generationPromises = activeAngles.map(async (angle) => {
+            const formData = new FormData();
+            formData.append("category", document.getElementById("garmentCategory360").value);
+            formData.append("person_image", capturedAngles[angle]);
+            formData.append("closet_item_id", selectedClosetItemId360);
+            
+            const response = await fetch(`${API_BASE_URL}/api/tryon`, {
+                method: "POST",
+                headers: { "Authorization": `Bearer ${authToken}` },
+                body: formData
+            });
+            
+            if (!response.ok) throw new Error(`Generation failed for ${angle}`);
+            const data = await response.json();
+            return { angle, jobId: data.id };
+        });
+
+        const jobIds = await Promise.all(generationPromises);
+        document.getElementById("loadingStatusText360").innerText = "Rendering layers across all perspectives...";
+        await poll360Jobs(jobIds);
+
+    } catch (err) {
+        logError("Batch Submission Error", err.message);
+        alert("Error initiating the 360 batch.");
+        reset360Ui();
+    }
+});
+
+async function poll360Jobs(jobs) {
+    const intervalId = setInterval(async () => {
+        let allComplete = true;
+        
+        for (let job of jobs) {
+            if (generatedResults.some(res => res.angle === job.angle)) continue;
+            allComplete = false;
+            
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/tryon/${job.jobId}`, {
+                    headers: { "Authorization": `Bearer ${authToken}` }
+                });
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.status === "completed") {
+                        generatedResults.push({ angle: job.angle, url: data.result_image_url });
+                    } else if (data.status === "failed") {
+                        clearInterval(intervalId);
+                        alert(`Model failed to map the ${job.angle} perspective.`);
+                        reset360Ui();
+                        return;
+                    }
+                }
+            } catch(e) {}
+        }
+
+        if (allComplete) {
+            clearInterval(intervalId);
+            initCarousel();
+        }
+    }, 3500);
+}
+
+function initCarousel() {
+    document.getElementById("loadingEngine360").classList.add("hidden");
+    document.getElementById("carouselContainer").classList.remove("hidden");
+    
+    const order = { 'front': 1, 'side': 2, 'back': 3 };
+    generatedResults.sort((a, b) => order[a.angle] - order[b.angle]);
+    
+    if (generatedResults.length > 1) {
+        document.getElementById("carouselControls").classList.remove("hidden");
+    }
+    
+    currentCarouselIndex = 0;
+    updateCarouselDisplay();
+}
+
+function updateCarouselDisplay() {
+    const current = generatedResults[currentCarouselIndex];
+    const imgEl = document.getElementById("carouselImg");
+    imgEl.src = current.url;
+    document.getElementById("angleLabel").innerText = current.angle;
+}
+
+document.getElementById("btnNextAngle").addEventListener("click", () => {
+    currentCarouselIndex = (currentCarouselIndex + 1) % generatedResults.length;
+    updateCarouselDisplay();
+});
+
+document.getElementById("btnPrevAngle").addEventListener("click", () => {
+    currentCarouselIndex = (currentCarouselIndex - 1 + generatedResults.length) % generatedResults.length;
+    updateCarouselDisplay();
+});
+
+function reset360Ui() {
+    document.getElementById("loadingEngine360").classList.add("hidden");
+    document.getElementById("placeholderText360").classList.remove("hidden");
+    update360State();
+}
 
 // Start application logic on load
 window.addEventListener("load", initApp);

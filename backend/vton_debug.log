@@ -12,3 +12,104 @@
 2026-07-02 18:06:36,226 - INFO - app.main - Mounted static uploads directory at: D:\vton-app\backend\static_uploads
 2026-07-02 18:06:51,174 - INFO - app.main - Database schemas initialized successfully.
 2026-07-02 18:06:51,192 - INFO - app.main - Mounted static uploads directory at: D:\vton-app\backend\static_uploads
+2026-07-03 13:45:18,583 - INFO - app.main - Database schemas initialized successfully.
+2026-07-03 13:45:18,627 - INFO - app.main - Mounted static uploads directory at: D:\vton-app\backend\static_uploads
+2026-07-03 17:31:28,271 - INFO - app.main - Database schemas initialized successfully.
+2026-07-03 17:31:28,312 - INFO - app.main - Mounted static uploads directory at: D:\vton-app\backend\static_uploads
+2026-07-03 17:31:28,689 - INFO - closet_logger - Retrieving closet items for user ID: 2
+2026-07-03 17:31:43,384 - INFO - app.auth - Login attempt for email: arpit.mishra.out@gmail.com
+2026-07-03 17:31:43,432 - WARNING - passlib.handlers.bcrypt - (trapped) error reading bcrypt version
+Traceback (most recent call last):
+  File "D:\vton-app\.venv\Lib\site-packages\passlib\handlers\bcrypt.py", line 620, in _load_backend_mixin
+    version = _bcrypt.__about__.__version__
+              ^^^^^^^^^^^^^^^^^
+AttributeError: module 'bcrypt' has no attribute '__about__'
+2026-07-03 17:31:44,188 - INFO - app.auth - User logged in successfully: Arpit007 (ID: 1)
+2026-07-03 17:31:48,210 - INFO - app.auth - Login attempt for email: arpit.mishra.out@gmail.com
+2026-07-03 17:31:48,862 - INFO - app.auth - User logged in successfully: Arpit007 (ID: 1)
+2026-07-03 17:31:50,318 - INFO - app.auth - Login attempt for email: arpit.mishra.out@gmail.com
+2026-07-03 17:31:51,195 - INFO - app.auth - User logged in successfully: Arpit007 (ID: 1)
+2026-07-03 17:31:52,274 - INFO - app.auth - Login attempt for email: arpit.mishra.out@gmail.com
+2026-07-03 17:31:54,805 - INFO - app.auth - User logged in successfully: Arpit007 (ID: 1)
+2026-07-03 17:32:01,396 - INFO - app.auth - Login attempt for email: arpit.mishra.out@gmail.com
+2026-07-03 17:32:01,858 - INFO - app.auth - User logged in successfully: Arpit007 (ID: 1)
+2026-07-03 17:32:46,731 - INFO - app.auth - Registration attempt for email: arpit.mishra.out@gmail.com
+2026-07-03 17:32:46,740 - WARNING - app.auth - Registration failed: Email arpit.mishra.out@gmail.com is already registered
+2026-07-03 17:32:53,659 - INFO - app.auth - Login attempt for email: arpit.mishra.out@gmail.com
+2026-07-03 17:32:54,234 - INFO - app.auth - User logged in successfully: Arpit007 (ID: 1)
+2026-07-03 17:32:56,416 - INFO - app.auth - Login attempt for email: arpit.mishra.out@gmail.com
+2026-07-03 17:32:57,197 - INFO - app.auth - User logged in successfully: Arpit007 (ID: 1)
+2026-07-03 17:32:58,195 - INFO - app.auth - Login attempt for email: arpit.mishra.out@gmail.com
+2026-07-03 17:32:58,862 - INFO - app.auth - User logged in successfully: Arpit007 (ID: 1)
+2026-07-03 17:33:00,235 - INFO - app.auth - Registration attempt for email: arpit.mishra.out@gmail.com
+2026-07-03 17:33:00,239 - WARNING - app.auth - Registration failed: Email arpit.mishra.out@gmail.com is already registered
+2026-07-03 17:36:32,012 - INFO - app.auth - Registration attempt for email: novak007@email.com
+2026-07-03 17:36:32,488 - INFO - app.auth - User registered successfully: Novak007 (ID: 3)
+2026-07-03 17:37:43,106 - INFO - app.main - Database schemas initialized successfully.
+2026-07-03 17:37:43,126 - INFO - app.main - Mounted static uploads directory at: D:\vton-app\backend\static_uploads
+2026-07-03 18:00:21,795 - INFO - app.auth - Login attempt for email: arpit.mishra.out@gmail.com
+2026-07-03 18:00:21,861 - WARNING - passlib.handlers.bcrypt - (trapped) error reading bcrypt version
+Traceback (most recent call last):
+  File "D:\vton-app\.venv\Lib\site-packages\passlib\handlers\bcrypt.py", line 620, in _load_backend_mixin
+    version = _bcrypt.__about__.__version__
+              ^^^^^^^^^^^^^^^^^
+AttributeError: module 'bcrypt' has no attribute '__about__'
+2026-07-03 18:00:22,327 - INFO - app.auth - User logged in successfully: Arpit007 (ID: 1)
+2026-07-03 18:09:30,866 - WARNING - app.auth - Token validation failed: User ID 5 not found in database
+2026-07-03 18:09:36,182 - INFO - app.main - Database schemas initialized successfully.
+2026-07-03 18:09:36,200 - INFO - app.main - Mounted static uploads directory at: D:\vton-app\backend\static_uploads
+2026-07-03 18:09:36,272 - WARNING - app.auth - Token validation failed: User ID 5 not found in database
+2026-07-03 18:09:39,069 - WARNING - app.auth - Token validation failed: User ID 5 not found in database
+2026-07-03 18:09:45,916 - WARNING - app.auth - Token validation failed: JWT decoding error (Not enough segments)
+2026-07-03 18:09:48,150 - INFO - app.auth - Login attempt for email: arpit.mishra.out@gmail.com
+2026-07-03 18:09:48,159 - WARNING - passlib.handlers.bcrypt - (trapped) error reading bcrypt version
+Traceback (most recent call last):
+  File "D:\vton-app\.venv\Lib\site-packages\passlib\handlers\bcrypt.py", line 620, in _load_backend_mixin
+    version = _bcrypt.__about__.__version__
+              ^^^^^^^^^^^^^^^^^
+AttributeError: module 'bcrypt' has no attribute '__about__'
+2026-07-03 18:09:49,042 - INFO - app.auth - User logged in successfully: Arpit007 (ID: 1)
+2026-07-03 18:09:51,977 - INFO - closet_logger - Retrieving closet items for user ID: 1
+2026-07-03 18:09:58,687 - INFO - closet_logger - Closet upload attempt by user ID: 1 | Filename: man.png
+2026-07-03 18:09:58,710 - INFO - closet_logger - Closet item saved successfully for user 1 | Item ID: 1
+2026-07-03 18:10:02,264 - INFO - closet_logger - Retrieving closet items for user ID: 1
+2026-07-03 18:13:08,302 - INFO - closet_logger - Closet upload attempt by user ID: 1 | Filename: man-with-open-sleeves.png
+2026-07-03 18:13:08,312 - INFO - closet_logger - Closet item saved successfully for user 1 | Item ID: 2
+2026-07-03 18:13:15,907 - INFO - closet_logger - Closet upload attempt by user ID: 1 | Filename: Man-with-shirt.png
+2026-07-03 18:13:15,917 - INFO - closet_logger - Closet item saved successfully for user 1 | Item ID: 3
+2026-07-03 18:13:24,568 - INFO - closet_logger - Closet upload attempt by user ID: 1 | Filename: Man-with-guitar.png
+2026-07-03 18:13:24,582 - INFO - closet_logger - Closet item saved successfully for user 1 | Item ID: 4
+2026-07-03 18:13:28,611 - INFO - closet_logger - Retrieving closet items for user ID: 1
+2026-07-03 18:47:44,709 - INFO - closet_logger - Retrieving closet items for user ID: 1
+2026-07-03 18:47:57,795 - INFO - app.auth - User logged out: Arpit007 (ID: 1)
+2026-07-03 18:48:07,222 - INFO - app.auth - Login attempt for email: arpit.mishra.out@gmail.com
+2026-07-03 18:48:07,610 - INFO - app.auth - User logged in successfully: Arpit007 (ID: 1)
+2026-07-03 18:48:22,132 - INFO - closet_logger - Retrieving closet items for user ID: 1
+2026-07-03 18:48:44,329 - INFO - closet_logger - Retrieving closet items for user ID: 1
+2026-07-03 18:48:57,825 - INFO - closet_logger - Retrieving closet items for user ID: 1
+2026-07-03 18:49:31,503 - INFO - closet_logger - Retrieving closet items for user ID: 1
+2026-07-03 18:53:38,523 - INFO - closet_logger - Retrieving closet items for user ID: 1
+2026-07-03 18:53:47,797 - INFO - closet_logger - Retrieving closet items for user ID: 1
+2026-07-03 18:58:19,156 - INFO - closet_logger - Retrieving closet items for user ID: 1
+2026-07-03 18:58:43,173 - INFO - app.auth - User logged out: Arpit007 (ID: 1)
+2026-07-03 18:59:01,627 - INFO - app.auth - Login attempt for email: arpit.mishra.out@gmail.com
+2026-07-03 18:59:02,063 - INFO - app.auth - User logged in successfully: Arpit007 (ID: 1)
+2026-07-03 18:59:21,267 - INFO - closet_logger - Retrieving closet items for user ID: 1
+2026-07-03 18:59:24,449 - INFO - closet_logger - Retrieving closet items for user ID: 1
+2026-07-03 19:03:07,005 - INFO - closet_logger - Retrieving closet items for user ID: 1
+2026-07-03 19:03:58,362 - INFO - app.auth - User logged out: Arpit007 (ID: 1)
+2026-07-03 19:04:01,926 - INFO - app.auth - Login attempt for email: arpit.mishra.out@gmail.com
+2026-07-03 19:04:02,332 - INFO - app.auth - User logged in successfully: Arpit007 (ID: 1)
+2026-07-03 19:04:16,455 - INFO - closet_logger - Retrieving closet items for user ID: 1
+2026-07-03 19:04:29,717 - INFO - closet_logger - Retrieving closet items for user ID: 1
+2026-07-03 19:07:02,545 - INFO - closet_logger - Retrieving closet items for user ID: 1
+2026-07-03 19:07:07,743 - INFO - app.main - Database schemas initialized successfully.
+2026-07-03 19:07:07,765 - INFO - app.main - Mounted static uploads directory at: D:\vton-app\backend\static_uploads
+2026-07-03 19:07:07,834 - INFO - closet_logger - Retrieving closet items for user ID: 1
+2026-07-03 19:07:09,543 - INFO - closet_logger - Retrieving closet items for user ID: 1
+2026-07-03 19:07:10,529 - INFO - closet_logger - Retrieving closet items for user ID: 1
+2026-07-03 19:07:27,809 - INFO - closet_logger - Retrieving closet items for user ID: 1
+2026-07-03 19:08:09,989 - INFO - closet_logger - Closet upload attempt by user ID: 1 | Filename: cloth.png
+2026-07-03 19:08:10,010 - INFO - closet_logger - Closet item saved successfully for user 1 | Item ID: 5
+2026-07-06 12:13:40,470 - INFO - app.main - Database schemas initialized successfully.
+2026-07-06 12:13:40,518 - INFO - app.main - Mounted static uploads directory at: D:\vton-app\backend\static_uploads

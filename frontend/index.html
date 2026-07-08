@@ -16,6 +16,7 @@
                     
             <div id="main-nav" class="tab-system hidden" style="max-width: 400px; margin: 15px auto 0;">
                 <button id="navStudio" class="tab-btn active">Studio</button>
+                <button id="nav360" class="tab-btn" style="color: #00f2c3;">360° Studio</button>
                 <button id="navOutfit" class="tab-btn">Outfit Builder</button>
                 <button id="navCloset" class="tab-btn">My Closet</button>
                 <button id="navHistory" class="tab-btn">History</button>
@@ -105,6 +106,85 @@
             </div>
         </main>
 
+        <!-- NEW: Phase 5 - 360° Multi-Angle Studio -->
+<main id="view360Panel" class="workspace hidden">
+    <div class="control-panel">
+        <div class="card">
+            <h3>1. Upload 360° Angles</h3>
+            <p class="hint" style="color:#9ca3af; font-size:0.9rem; margin-bottom:15px;">Upload up to 3 angles for a complete rendering.</p>
+            
+            <div class="upload-grid">
+                <!-- Front -->
+                <div class="upload-slot front">
+                    <label style="color:#00f2c3; font-weight:700; display:block; margin-bottom:8px;">Front</label>
+                    <input type="file" id="userFileFront" accept="image/*" style="padding:6px; font-size:0.75rem;">
+                    <img id="previewFront" class="hidden" style="width:100%; border-radius:8px; margin-top:10px;">
+                </div>
+                <!-- Side -->
+                <div class="upload-slot side">
+                    <label style="color:#6366f1; font-weight:700; display:block; margin-bottom:8px;">Side</label>
+                    <input type="file" id="userFileSide" accept="image/*" style="padding:6px; font-size:0.75rem;">
+                    <img id="previewSide" class="hidden" style="width:100%; border-radius:8px; margin-top:10px;">
+                </div>
+                <!-- Back -->
+                <div class="upload-slot back">
+                    <label style="color:#a855f7; font-weight:700; display:block; margin-bottom:8px;">Back</label>
+                    <input type="file" id="userFileBack" accept="image/*" style="padding:6px; font-size:0.75rem;">
+                    <img id="previewBack" class="hidden" style="width:100%; border-radius:8px; margin-top:10px;">
+                </div>
+            </div>
+            <button id="btnReset360" class="secondary-btn hidden" style="width: 100%; margin-top: 15px;">Reset Angles</button>
+        </div>
+
+        <div class="card">
+            <h3>2. Apparel Choice</h3>
+            <div class="form-group">
+                <label for="garmentCategory360">Clothing Category:</label>
+                <select id="garmentCategory360">
+                    <option value="tops">Top Wear</option>
+                    <option value="bottoms">Bottom Wear</option>
+                    <option value="one-pieces">One-Piece</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Select from Closet:</label>
+                <button id="btnSelectFromCloset360" class="secondary-btn" style="width:100%;">Open Closet</button>
+            </div>
+            <!-- Preview for selected closet item -->
+            <div id="selectedGarmentPreview360" class="preview-box hidden" style="margin-top: 15px; text-align: center;">
+                <img id="garmentPreviewImg360" src="" alt="Selected Garment" style="width: 100px; border-radius: 8px;">
+                <button id="btnRemoveGarment360" class="danger-btn" style="padding: 6px 12px; margin-top: 10px;">Remove</button>
+            </div>
+        </div>
+
+        <button id="btnGenerate360" class="action-btn" style="width:100%;" disabled>Generate 360° Batch</button>
+    </div>
+
+    <div class="output-panel">
+        <div class="card result-card" style="min-height: 500px; display: flex; flex-direction: column;">
+            <h3>3. Try-On Result</h3>
+            
+            <div id="resultDisplay360" class="result-display-area" style="background:transparent; flex: 1; display:flex; flex-direction:column; justify-content:center;">
+                <p id="placeholderText360" style="color:#9ca3af; text-align:center;">Configure your 360° angles and hit generate.</p>
+                
+                <div id="loadingEngine360" class="spinner-container hidden">
+                    <div class="spinner"></div>
+                    <p id="loadingStatusText360" style="margin-top:15px; font-weight:700; color:#00f2c3;">Orchestrating concurrent API tasks...</p>
+                </div>
+
+                <div id="carouselContainer" class="carousel-container hidden">
+                    <img id="carouselImg" class="carousel-img" src="" alt="AI Try-On Result">
+                </div>
+                
+                <div id="carouselControls" class="carousel-controls hidden">
+                    <button id="btnPrevAngle" class="secondary-btn" style="padding:10px 15px;">◀</button>
+                    <span id="angleLabel" style="color:#fff; font-weight:700; min-width:80px; text-align:center; text-transform:uppercase;">Front</span>
+                    <button id="btnNextAngle" class="secondary-btn" style="padding:10px 15px;">▶</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</main>
         <!-- NEW: Phase 4 Outfit Builder -->
         <main id="outfitViewPanel" class="workspace hidden">
             <div class="control-panel">

@@ -1,163 +1,242 @@
-* { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-body { background-color: #f5f7fb; color: #2d3748; padding: 20px; }
+/* ==========================================================================
+   GLOBAL BRAND: FUNKY CLASSIC (RETRO-MODERN LIGHT THEME)
+   ========================================================================== */
+* { 
+    box-sizing: border-box; 
+    margin: 0; 
+    padding: 0; 
+    font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, sans-serif; 
+}
+
+body { 
+    background-color: #F4F0EB; /* Warm, classic retro cream */
+    color: #1E1E24; /* Deep charcoal text */
+    padding: 24px;
+    background-image: radial-gradient(#d1ccc5 1px, transparent 1px);
+    background-size: 20px 20px; /* Funky, subtle polka-dot grid */
+}
+
 .container { max-width: 1200px; margin: 0 auto; }
-header { margin-bottom: 30px; text-align: center; }
-header h1 { color: #1a202c; margin-bottom: 8px; }
-header p { color: #718096; }
 
-.workspace { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
-@media (max-width: 768px) { .workspace { grid-template-columns: 1fr; } }
+header { margin-bottom: 40px; text-align: center; position: relative; }
+header h1 { 
+    font-size: 3rem;
+    font-weight: 800;
+    letter-spacing: -1.5px;
+    color: #1E1E24;
+    margin-bottom: 12px; 
+    text-shadow: 3px 3px 0px #FF5A5F; /* Funky retro text shadow */
+}
+header p { color: #5f6368; font-size: 1.1rem; font-weight: 500; }
 
-.card { background: white; border-radius: 12px; padding: 24px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); margin-bottom: 24px; }
-h3 { margin-bottom: 16px; font-size: 1.1rem; color: #4a5568; border-bottom: 1px solid #edf2f7; padding-bottom: 8px; }
+/* Smooth Workspace Transitions */
+.workspace { 
+    display: grid; 
+    grid-template-columns: 1.1fr 0.9fr; 
+    gap: 32px; 
+    opacity: 1;
+    transform: translateY(0);
+    transition: opacity 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275), transform 0.4s ease;
+}
+.workspace.hidden { display: none !important; opacity: 0; transform: translateY(20px); }
+@media (max-width: 968px) { .workspace { grid-template-columns: 1fr; gap: 24px; } }
 
-.tab-system { display: flex; gap: 10px; margin-bottom: 16px; }
-.tab-btn { flex: 1; padding: 10px; background: #e2e8f0; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; }
-.tab-btn.active { background: #4a5568; color: white; }
+/* Clean, Bouncy Cards */
+.card { 
+    background: #FFFFFF; 
+    border-radius: 24px; 
+    padding: 32px; 
+    box-shadow: 0px 10px 30px rgba(0, 0, 0, 0.05);
+    border: 2px solid #FFFFFF;
+    margin-bottom: 24px; 
+    transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275), box-shadow 0.3s ease;
+}
+.card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0px 15px 35px rgba(0, 0, 0, 0.08);
+}
 
-.video-container { position: relative; width: 100%; background: #000; border-radius: 8px; overflow: hidden; aspect-ratio: 4/5; }
-video { width: 100%; height: 100%; object-fit: cover; }
-.overlay-guide { position: absolute; top: 10%; left: 15%; width: 70%; height: 80%; border: 2px dashed rgba(255,255,255,0.5); border-radius: 50% 50% 40% 40%; pointer-events: none; }
+h3 { 
+    margin-bottom: 20px; font-size: 1.4rem; color: #1E1E24; font-weight: 800;
+    border-bottom: 2px dashed #E2E8F0; padding-bottom: 12px; 
+}
 
-.camera-controls { display: flex; gap: 12px; margin-top: 12px; }
-button { padding: 12px 20px; border-radius: 8px; font-weight: 600; cursor: pointer; border: none; transition: background 0.2s; width: 100%; }
-.primary-btn { background: #3182ce; color: white; }
-.secondary-btn { background: #edf2f7; color: #4a5568; }
-.danger-btn { background: #fed7d7; color: #c53030; margin-top: 10px; }
-.action-btn { background: #48bb78; color: white; font-size: 1.1rem; padding: 16px; margin-top: 10px; }
-button:disabled { opacity: 0.5; cursor: not-allowed; }
+/* 360° Grid Uploads & Interactive Tabs */
+.tab-system { 
+    display: flex; gap: 10px; margin-bottom: 24px; 
+    background: #E9E4DE; padding: 8px; border-radius: 50px; 
+}
+.tab-btn { 
+    flex: 1; padding: 12px; background: transparent; color: #5f6368;
+    border: none; border-radius: 40px; cursor: pointer; font-weight: 700; font-size: 1rem;
+    transition: all 0.3s ease;
+}
+.tab-btn.active { 
+    background: #FFFFFF; 
+    color: #087E8B; /* Deep Teal */
+    box-shadow: 0 4px 10px rgba(0,0,0,0.08);
+}
 
-.form-group { margin-bottom: 16px; }
-label { display: block; margin-bottom: 6px; font-weight: 600; font-size: 0.9rem; }
-select, input[type="file"] { width: 100%; padding: 10px; border: 1px solid #cbd5e0; border-radius: 6px; background: white; }
+.upload-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 15px; }
+.upload-slot {
+    background: #F8F9FA; padding: 15px; border-radius: 16px; 
+    text-align: center; border: 2px dashed #CBD5E1; transition: all 0.2s ease;
+}
+.upload-slot:hover { border-color: #087E8B; background: #F1F5F9; }
 
-.preview-box img, .result-display-area img { width: 100%; border-radius: 8px; object-fit: contain; max-height: 500px; }
-.result-display-area { background: #edf2f7; min-height: 400px; border-radius: 8px; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 20px; text-align: center; }
-
-.spinner-container { display: flex; flex-direction: column; align-items: center; gap: 16px; }
-.spinner { width: 50px; height: 50px; border: 5px solid #e2e8f0; border-top-color: #3182ce; border-radius: 50%; animation: spin 1s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
-.hidden { display: none !important; }
-select, input[type="file"], input[type="text"] { 
-    width: 100%; 
-    padding: 10px; 
-    border: 1px solid #cbd5e0; 
-    border-radius: 6px; 
-    background: white; 
-}* { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-body { background-color: #f5f7fb; color: #2d3748; padding: 20px; }
-.container { max-width: 1200px; margin: 0 auto; }
-header { margin-bottom: 30px; text-align: center; }
-header h1 { color: #1a202c; margin-bottom: 8px; }
-header p { color: #718096; }
-
-.workspace { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
-@media (max-width: 768px) { .workspace { grid-template-columns: 1fr; } }
-
-.card { background: white; border-radius: 12px; padding: 24px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); margin-bottom: 24px; }
-h3 { margin-bottom: 16px; font-size: 1.1rem; color: #4a5568; border-bottom: 1px solid #edf2f7; padding-bottom: 8px; }
-
-.tab-system { display: flex; gap: 10px; margin-bottom: 16px; }
-.tab-btn { flex: 1; padding: 10px; background: #e2e8f0; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; }
-.tab-btn.active { background: #4a5568; color: white; }
-
-.video-container { position: relative; width: 100%; background: #000; border-radius: 8px; overflow: hidden; aspect-ratio: 4/5; }
-video { width: 100%; height: 100%; object-fit: cover; }
-.overlay-guide { position: absolute; top: 10%; left: 15%; width: 70%; height: 80%; border: 2px dashed rgba(255,255,255,0.5); border-radius: 50% 50% 40% 40%; pointer-events: none; }
-
-.camera-controls { display: flex; gap: 12px; margin-top: 12px; }
-button { padding: 12px 20px; border-radius: 8px; font-weight: 600; cursor: pointer; border: none; transition: background 0.2s; width: 100%; }
-.primary-btn { background: #3182ce; color: white; }
-.secondary-btn { background: #edf2f7; color: #4a5568; }
-.danger-btn { background: #fed7d7; color: #c53030; margin-top: 10px; }
-.action-btn { background: #48bb78; color: white; font-size: 1.1rem; padding: 16px; margin-top: 10px; }
-button:disabled { opacity: 0.5; cursor: not-allowed; }
-
-.form-group { margin-bottom: 16px; }
-label { display: block; margin-bottom: 6px; font-weight: 600; font-size: 0.9rem; }
+/* Buttons & Inputs */
 select, input[type="file"], input[type="text"], input[type="email"], input[type="password"] { 
-    width: 100%; 
-    padding: 10px; 
-    border: 1px solid #cbd5e0; 
-    border-radius: 6px; 
-    background: white; 
+    width: 100%; padding: 14px 16px; border: 2px solid #E2E8F0; 
+    border-radius: 12px; background: #F8F9FA; color: #1E1E24; font-weight: 500; transition: all 0.2s;
+}
+select:focus, input:focus { outline: none; border-color: #087E8B; background: #FFFFFF; box-shadow: 0 0 0 4px rgba(8, 126, 139, 0.1); }
+
+button { 
+    padding: 14px 24px; border-radius: 50px; font-weight: 800; cursor: pointer; 
+    border: none; text-transform: uppercase; letter-spacing: 0.5px; transition: all 0.2s;
+}
+button:active { transform: scale(0.95); }
+button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Vibrant Funky Buttons */
+.primary-btn { background: #087E8B; color: white; box-shadow: 0 4px 15px rgba(8, 126, 139, 0.3); }
+.primary-btn:hover:not(:disabled) { background: #076d78; transform: translateY(-2px); }
+
+.secondary-btn { background: #E2E8F0; color: #1E1E24; }
+.secondary-btn:hover:not(:disabled) { background: #CBD5E1; }
+
+.danger-btn { background: #FF5A5F; color: white; box-shadow: 0 4px 15px rgba(255, 90, 95, 0.3);}
+.danger-btn:hover:not(:disabled) { background: #e04e52; transform: translateY(-2px); }
+
+.action-btn { 
+    background: #FFC107; /* Classic Mustard Yellow */
+    color: #1E1E24; 
+    font-size: 1.1rem; padding: 18px; font-weight: 800; 
+    box-shadow: 0 6px 0px #D39E00; /* Chunky retro shadow */
+    border-radius: 16px;
+    margin-top: 10px;
+}
+.action-btn:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 8px 0px #D39E00; }
+.action-btn:active:not(:disabled) { transform: translateY(4px); box-shadow: 0 2px 0px #D39E00; }
+
+/* Output Carousel & Video */
+.video-container { 
+    position: relative; width: 100%; background: #E2E8F0; 
+    border-radius: 16px; overflow: hidden; aspect-ratio: 4/5; 
+}
+video { width: 100%; height: 100%; object-fit: cover; }
+.overlay-guide { 
+    position: absolute; top: 10%; left: 15%; width: 70%; height: 80%; 
+    border: 3px dashed #FFFFFF; border-radius: 50% 50% 40% 40%; pointer-events: none; 
 }
 
-.preview-box img, .result-display-area img { width: 100%; border-radius: 8px; object-fit: contain; max-height: 500px; }
-.result-display-area { background: #edf2f7; min-height: 400px; border-radius: 8px; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 20px; text-align: center; }
-
-.spinner-container { display: flex; flex-direction: column; align-items: center; gap: 16px; }
-.spinner { width: 50px; height: 50px; border: 5px solid #e2e8f0; border-top-color: #3182ce; border-radius: 50%; animation: spin 1s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
-.hidden { display: none !important; }
-
-/* ==========================================
-   NEW SPA ADDITIONS (Auth & Galleries)
-   ========================================== */
-.modal-overlay {
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    background: rgba(0, 0, 0, 0.6);
-    backdrop-filter: blur(5px);
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    z-index: 1000;
+.carousel-container { position: relative; width: 100%; overflow: hidden; border-radius: 16px; background: #F8F9FA; border: 2px solid #E2E8F0; }
+.carousel-img { width: 100%; object-fit: contain; max-height: 550px; animation: fadeIn 0.4s ease; }
+.carousel-controls { 
+    display: flex; justify-content: center; align-items: center; gap: 15px; 
+    margin-top: 15px; background: #F8F9FA; padding: 10px; border-radius: 50px; border: 2px solid #E2E8F0;
 }
+@keyframes fadeIn { from { opacity: 0; transform: scale(0.98); } to { opacity: 1; transform: scale(1); } }
 
-.modal-card {
-    width: 90%;
-    max-width: 400px;
-    margin-bottom: 0;
-}
-
+/* =========================================================
+   FIXED: E-Commerce E-Closet Grid
+   ========================================================= */
 .gallery-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-    gap: 15px;
-    margin-top: 20px;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 20px;
+    margin-top: 25px;
 }
-
 .gallery-item {
     width: 100%;
     aspect-ratio: 3/4;
-    object-fit: cover;
-    border-radius: 8px;
-    border: 2px solid #edf2f7;
+    object-fit: cover; /* This forces the image to stay perfectly inside its box */
+    border-radius: 16px;
+    border: 2px solid #E2E8F0;
     cursor: pointer;
-    transition: border-color 0.2s;
+    background: #FFFFFF;
+    transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275), box-shadow 0.2s ease;
 }
-
 .gallery-item:hover {
-    border-color: #3182ce;
+    transform: scale(1.05) translateY(-4px);
+    border-color: #087E8B;
+    box-shadow: 0 12px 24px rgba(8, 126, 139, 0.15);
 }
 
-/* Add position relative so the X stays inside the card */
+/* =========================================================
+   FIXED: Modals and the "X" Close Button
+   ========================================================= */
+.modal-overlay {
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(30, 30, 36, 0.6); backdrop-filter: blur(8px);
+    display: flex; justify-content: center; align-items: center; z-index: 1000;
+}
+
 .modal-card {
-    position: relative; 
+    position: relative;
+    max-width: 420px;
     width: 90%;
-    max-width: 400px;
-    margin-bottom: 0;
+    margin: 0;
 }
 
-/* Style the X button */
-.close-modal-btn {
+/* This targets ONLY the close button to fix the white box issue */
+button.close-modal-btn {
     position: absolute;
-    top: 15px;
-    right: 15px;
-    background: transparent;
-    border: none;
-    font-size: 28px;
-    font-weight: bold;
-    color: #a0aec0;
+    top: 20px;
+    right: 20px;
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    font-size: 32px;
+    color: #1E1E24;
     cursor: pointer;
-    line-height: 1;
     padding: 0;
+    width: auto;
+    line-height: 0.5;
+    transition: color 0.2s ease;
 }
 
-.close-modal-btn:hover {
-    color: #e53e3e; /* Turns red when hovered */
+button.close-modal-btn:hover {
+    color: #FF5A5F;
+    transform: scale(1.1);
+}
+
+/* Loaders & Utilities */
+.spinner-container { display: flex; flex-direction: column; align-items: center; padding: 40px 0; }
+.spinner { width: 56px; height: 56px; border: 5px solid #E2E8F0; border-top-color: #FF5A5F; border-radius: 50%; animation: spin 0.8s cubic-bezier(0.4, 0, 0.2, 1) infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.hidden { display: none !important; }
+
+/* =========================================================
+   STRICT IMAGE PREVIEW CONSTRAINTS
+   ========================================================= */
+
+/* 1. Main Studio & Garment Previews */
+.preview-box img { 
+    width: 100%; 
+    max-height: 280px; /* Locks the height so it never pushes content down */
+    object-fit: contain; /* Keeps the whole image visible without stretching */
+    border-radius: 16px; 
+    background: #FFFFFF;
+    border: 2px solid #E2E8F0;
+    padding: 8px; /* Adds a nice polaroid-style inner border */
+}
+
+/* 2. The 360° Grid Upload Slots */
+.upload-slot img {
+    width: 100%;
+    height: 160px; /* Strict, uniform height for all 3 grid items */
+    object-fit: contain; 
+    border-radius: 12px;
+    margin-top: 12px;
+    background: #FFFFFF;
+    border: 1px solid #E2E8F0;
+}
+
+/* 3. The Final AI Result Area */
+.result-display-area img, .carousel-img { 
+    width: 100%; 
+    max-height: 550px; /* Allows the final result to be larger, but still capped */
+    object-fit: contain; 
+    border-radius: 16px; 
 }
