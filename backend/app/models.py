@@ -131,6 +131,7 @@ class StudioJobType(str, enum.Enum):
     MODEL_SWAP = "model_swap"
     IMAGE_TO_VIDEO = "image_to_video"
     BACKGROUND_CHANGE = "background_change"
+    FACE_TO_MODEL = "face_to_model"
     
     
 class StudioJob(Base):

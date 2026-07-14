@@ -458,3 +458,68 @@ async def get_studio_job_status(
     except Exception as e:
         logger.error(f"Error fetching studio status for Job {job_id}: {str(e)}", exc_info=True)
         raise APIException(status_code=500, msg="Internal error fetching status.")
+    
+    
+    
+    
+# ==========================================
+# 7. FACE TO MODEL (Headshot -> Try-on Avatar)
+# ==========================================
+@router.post("/face-to-model", response_model=StandardResponse)
+async def face_to_model(
+    face_image: UploadFile = File(...),                                    # Required: The cropped headshot/selfie
+    prompt: Optional[str] = Form(None),                                    # Optional: Body shape guidance
+    aspect_ratio: str = Form("2:3"),                                       # Supported: 1:1, 4:5, 3:4, 2:3, 9:16
+    resolution: str = Form("1k"),                                          # '1k', '2k', or '4k'
+    generation_mode: Optional[str] = Form(None),                           # 'fast', 'balanced', or 'quality'
+    num_images: int = Form(1),                                             # 1 to 4
+    output_format: str = Form("jpeg"),                                     # 'png' or 'jpeg' (FASHN defaults to jpeg here)
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    # 1. Process Required Upload
+    face_url = await process_upload(face_image)
+    
+    # 2. Base Payload with defaults mapped to documentation
+    input_data = {
+        "face_image": face_url,
+        "aspect_ratio": aspect_ratio,
+        "resolution": resolution,
+        "num_images": num_images,
+        "output_format": output_format
+    }
+    
+    # 3. Append Optional Form Data cleanly
+    if prompt:
+        input_data["prompt"] = prompt
+    if generation_mode:
+        input_data["generation_mode"] = generation_mode
+
+    # 4. Save tracking state to DB
+    db_job = models.StudioJob(
+        user_id=current_user.id,
+        job_type=models.StudioJobType.FACE_TO_MODEL,
+        input_data=input_data
+    )
+    db.add(db_job)
+    db.commit()
+    db.refresh(db_job)
+
+    try:
+        # 5. Trigger FASHN AI Engine
+        fashn_id = await trigger_generic_fashn_job(
+            model_name="face-to-model",
+            inputs=input_data
+        )
+        db_job.fashn_job_id = fashn_id
+        db_job.status = models.JobStatus.PROCESSING
+        db.commit()
+        
+        return StandardResponse(
+            status=True, 
+            msg="Face-to-Model avatar creation started successfully.", 
+            data={"job_id": db_job.id, "status": db_job.status.value}
+        )
+    except Exception as e:
+        db.rollback()
+        raise APIException(status_code=500, msg=f"AI Engine failed: {str(e)}")
