@@ -8,8 +8,12 @@ from . import models
 from .database import get_db
 from .auth import get_current_user
 
+
+import logging
+
 router = APIRouter(prefix="/api/history", tags=["History"])
 
+logger = logging.getLogger(__name__)
 # Pydantic schema for the incoming request
 class HistoryCreate(BaseModel):
     image_url: str

@@ -116,25 +116,46 @@ logger.info(f"Mounted static uploads directory at: {UPLOAD_DIR}")
 
 
         
-        
-# Register the global exception handler
+ # ---------------------------------------------------------
+# 1. CONTROLLED ERROR HANDLER (Respects your custom status codes)
+# ---------------------------------------------------------
+@app.exception_handler(APIException)
+async def custom_api_exception_handler(request: Request, exc: APIException):
+    """
+    Catches deliberate exceptions like APIException(status_code=400, msg="Bad format")
+    and returns the exact code you specified, rather than defaulting to 500.
+    """
+    # Log as a warning so you know it happened, but it isn't a server crash
+    logger.warning(f"Controlled API Error [{exc.status_code}]: {exc.msg}")
+    
+    return JSONResponse(
+        status_code=exc.status_code, # Injects the exact status code from the route
+        content={
+            "status": False,
+            "msg": exc.msg,
+            "data": exc.data
+        }
+    )
+
+# ---------------------------------------------------------
+# 2. GLOBAL CRASH HANDLER (Only catches true 500 failures)
+# ---------------------------------------------------------
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     """
-    Catches ALL unexpected 500 crashes and forces them into vton_app.log
+    Catches ALL unexpected framework crashes (e.g., missing DB columns, syntax errors).
+    Since these are true failures, they correctly default to 500.
     """
-    # Grab the exact file and line number that crashed
     error_trace = traceback.format_exc()
     
-    # Force it into your log file
+    # Log as a critical error with the full traceback
     logger.error(f"CRITICAL UNHANDLED ERROR:\n{error_trace}")
     
-    # Return a clean JSON response instead of a raw text server crash
     return JSONResponse(
         status_code=500,
         content={
             "status": False, 
-            "msg": "Internal Server Error. Developers: Check vton_app.log for full Traceback.", 
+            "msg": str(exc), 
             "data": None
         }
     )
