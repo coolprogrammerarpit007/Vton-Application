@@ -20,6 +20,11 @@ class JobStatus(str, enum.Enum):
     PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
+    
+class MasterModuleType(str, enum.Enum):
+    TRYON = "tryon"
+    THREE_SIXTY = "three-sixty"
+    OUTFIT = "outfit"
 
 class User(Base):
     __tablename__ = "users"

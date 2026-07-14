@@ -23,6 +23,7 @@ from .studio import router as studio_router
 from .three_sixty import router as three_sixty_router
 
 from .fashn_service import trigger_vton_job, check_vton_status
+from .models import MasterModuleType
 
 from .auth import router as auth_router
 from fastapi.staticfiles import StaticFiles
@@ -349,3 +350,87 @@ async def get_tryon_status(
     except Exception as e:
         logger.error(f"CRITICAL ERROR polling FASHN status for Job {job_id}: {str(e)}", exc_info=True)
         raise APIException(status_code=500, msg="Internal server error while polling job status.")
+    
+    
+    
+    
+    
+@app.get("/api/universal-status/{module_type}/{job_id}", response_model=StandardResponse)
+async def universal_status_check(
+    module_type: MasterModuleType,
+    job_id: int, 
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Master Status API routing specifically for Try-On, 360, and Outfit features.
+    """
+    logger.info(f"Universal Poll: User {current_user.id} checking {module_type.value} Job {job_id}")
+
+    try:
+        # ==========================================
+        # ROUTE 1 & 2: TRY-ON & 360 GENERATION
+        # Both utilize the TryOnJob table
+        # ==========================================
+        if module_type in [MasterModuleType.TRYON, MasterModuleType.THREE_SIXTY]:
+            db_job = db.query(models.TryOnJob).filter(
+                models.TryOnJob.id == job_id, 
+                models.TryOnJob.user_id == current_user.id
+            ).first()
+            
+            if not db_job: 
+                raise APIException(status_code=404, msg=f"{module_type.value.title()} job not found.")
+            
+            if db_job.status == models.JobStatus.PROCESSING and db_job.fashn_job_id:
+                fashn_status, output = await check_vton_status(db_job.fashn_job_id)
+                
+                if fashn_status == "completed":
+                    db_job.status = models.JobStatus.COMPLETED
+                    # Save to the JSON column safely
+                    db_job.result_image_urls = output if isinstance(output, list) else [output]
+                    db.commit()
+                elif fashn_status == "failed":
+                    db_job.status = models.JobStatus.FAILED
+                    db.commit()
+
+            return StandardResponse(
+                status=True, 
+                msg="Status retrieved", 
+                data={
+                    "id": db_job.id, 
+                    "module": module_type.value, 
+                    "status": db_job.status.value, 
+                    "result_image_urls": db_job.result_image_urls
+                }
+            )
+
+        # ==========================================
+        # ROUTE 3: OUTFIT BUILDER (Background Chained)
+        # ==========================================
+        elif module_type == MasterModuleType.OUTFIT:
+            db_job = db.query(models.OutfitJob).filter(
+                models.OutfitJob.id == job_id, 
+                models.OutfitJob.user_id == current_user.id
+            ).first()
+            
+            if not db_job: 
+                raise APIException(status_code=404, msg="Outfit job not found.")
+            
+            # Outfit jobs poll internally via the background worker, 
+            # so we ONLY safely return the local database state here.
+            return StandardResponse(
+                status=True, 
+                msg="Status retrieved", 
+                data={
+                    "id": db_job.id, 
+                    "module": module_type.value, 
+                    "status": db_job.status.value, 
+                    "result_image_url": db_job.result_image_url
+                }
+            )
+
+    except APIException:
+        raise
+    except Exception as e:
+        logger.error(f"Universal Polling Error: {str(e)}", exc_info=True)
+        raise APIException(status_code=500, msg="Internal tracking error.")
