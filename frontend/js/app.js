@@ -1,4 +1,4 @@
-const API_BASE_URL = "https://vton-backend.falcondetectives.com"; // Update this to your deployed backend URL
+const API_BASE_URL = "http://127.0.0.1:8000"; // Update this to your deployed backend URL
 const DEBUG_MODE = true; 
 
 // --- NEW STATE VARIABLES ---

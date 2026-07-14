@@ -1,11 +1,13 @@
-from sqlalchemy import Column, Integer, String, Enum, ForeignKey, DateTime, func
-from sqlalchemy.orm import relationship
+from sqlalchemy import Column, Integer, String, Enum, ForeignKey, DateTime, func,JSON
+from sqlalchemy.orm import relationship,Mapped,mapped_column
 from sqlalchemy.sql import func
 import enum
 from datetime import datetime
 from app.database import Base
 
 
+
+    
 
 
 class GarmentCategory(str, enum.Enum):
@@ -41,7 +43,8 @@ class TryOnJob(Base):
     # Storage URLs for processing images
     user_image_url = Column(String(255), nullable=False)
     garment_image_url = Column(String(255), nullable=False)
-    result_image_url = Column(String(255), nullable=True)
+    # result_image_url = Column(String(255), nullable=True)
+    result_image_urls = Column(JSON, nullable=True)
     
     # Tracking parameters for the third-party FASHN.ai system
     fashn_job_id = Column(String(100), nullable=True, index=True)
@@ -115,3 +118,28 @@ class HistoryItem(Base):
 
     # Establish relationship to the User model if needed
     owner = relationship("User")
+    
+    
+class StudioJobType(str, enum.Enum):
+    PRODUCT_TO_MODEL = "product_to_model"
+    MODEL_CREATE = "model_create"
+    MODEL_SWAP = "model_swap"
+    IMAGE_TO_VIDEO = "image_to_video"
+    BACKGROUND_CHANGE = "background_change"
+    
+    
+class StudioJob(Base):
+    __tablename__ = "studio_jobs"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True)
+    job_type = Column(Enum(StudioJobType), index=True)
+    status = Column(Enum(JobStatus), default=JobStatus.PENDING)
+    
+    # ✅ FIXED: Changed to allow null values while the background task runs
+    fashn_job_id = Column(String(255), nullable=True) 
+    
+    input_data = Column(JSON, default={})
+    result_urls = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())

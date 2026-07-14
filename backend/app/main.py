@@ -1,23 +1,35 @@
 import os
-import logging
-from logging.handlers import TimedRotatingFileHandler
-from fastapi import FastAPI, Depends, HTTPException, File, UploadFile, Form
-from fastapi.staticfiles import StaticFiles
-from sqlalchemy.orm import Session
-from typing import Optional
-from . import models, schemas
-from .database import engine, get_db
-from .utils import save_upload_file
 
-from .fashn_service import trigger_vton_job, check_vton_status
+from fastapi import FastAPI, Depends, File, UploadFile, Form,Request,APIRouter
+from fastapi.responses import JSONResponse
+import traceback
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
-from .auth import router as auth_router
-from fastapi.staticfiles import StaticFiles
+from sqlalchemy.orm import Session
+from typing import Optional
+
+from . import models
+from .database import engine, get_db
+from .exceptions import APIException
+from .utils import save_upload_file
+
 from .closet import router as closet_router
 from .outfit import router as outfit_router
 from .auth import get_current_user
+from .schemas import StandardResponse
 from .history import router as history_router
+from .studio import router as studio_router
+from .three_sixty import router as three_sixty_router
+
+from .fashn_service import trigger_vton_job, check_vton_status
+
+from .auth import router as auth_router
+from fastapi.staticfiles import StaticFiles
+
+import logging
+from logging.handlers import TimedRotatingFileHandler
+
 
 
 
@@ -62,12 +74,17 @@ try:
 except Exception as e:
     logger.critical(f"Failed to initialize database schemas: {str(e)}", exc_info=True)
     
-
+router = APIRouter()
 app = FastAPI(title="Virtual Try-On API Studio")
-app.include_router(auth_router)
-app.include_router(closet_router)
-app.include_router(outfit_router)
+
+
+# Register Routers (ENSURE NO TRAILING SLASHES)
+app.include_router(auth_router,  tags=["Auth"])
+app.include_router(closet_router,  tags=["Closet"])
 app.include_router(history_router)
+app.include_router(outfit_router)
+app.include_router(three_sixty_router)
+app.include_router(studio_router)
 app.mount("/static_uploads", StaticFiles(directory="static_uploads"), name="static_uploads")
 
 
@@ -95,62 +112,104 @@ app.mount("/static_uploads", StaticFiles(directory=UPLOAD_DIR), name="static_upl
 logger.info(f"Mounted static uploads directory at: {UPLOAD_DIR}")
 
 
+# ****************************  DEFINING THE Custom Exception *************************
+
+
+        
+        
+# Register the global exception handler
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """
+    Catches ALL unexpected 500 crashes and forces them into vton_app.log
+    """
+    # Grab the exact file and line number that crashed
+    error_trace = traceback.format_exc()
+    
+    # Force it into your log file
+    logger.error(f"CRITICAL UNHANDLED ERROR:\n{error_trace}")
+    
+    # Return a clean JSON response instead of a raw text server crash
+    return JSONResponse(
+        status_code=500,
+        content={
+            "status": False, 
+            "msg": "Internal Server Error. Developers: Check vton_app.log for full Traceback.", 
+            "data": None
+        }
+    )
+        
+
+# *************************************************************************************
+
+
 @app.get("/")
 def read_root():
     return {"message": "VTON Core Engine is running"}
 
 
-
-@app.post("/api/tryon", response_model=schemas.TryOnJobOut)
+@app.post("/api/tryon", response_model=StandardResponse)
 async def create_tryon_job(
     category: models.GarmentCategory = Form(...),
     garment_desc: Optional[str] = Form(""), 
     person_image: UploadFile = File(...),
-    garment_image: Optional[UploadFile] = File(None), # Optional now
-    closet_item_id: Optional[int] = Form(None),       # New parameter
+    garment_image: Optional[UploadFile] = File(None),
+    closet_item_id: Optional[int] = Form(None),
+    resolution: str = Form("1k"),
+    output_format: str = Form("png"),
+    num_images: int = Form(1),
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user) # Using Auth Token
+    current_user: models.User = Depends(get_current_user)
 ):
-    logger.info(f"Incoming try-on request | User ID: {current_user.id} | Category: {category.value}")
-    base_url = "https://vton-backend.falcondetectives.com"  # Update this to your deployed backend URL
-
-    # 1. Determine Garment Source
-    if closet_item_id:
-        item = db.query(models.ClosetItem).filter(
-            models.ClosetItem.id == closet_item_id,
-            models.ClosetItem.user_id == current_user.id
-        ).first()
-        if not item:
-            raise HTTPException(status_code=404, detail="Closet item not found")
-        
-        # Safely construct the URL from the DB file path
-        path_part = item.file_path.replace("\\", "/") 
-        if not path_part.startswith("/"):
-            path_part = "/" + path_part
-        garment_url = f"{base_url}{path_part}"
-        logger.info(f"Using closet item ID: {closet_item_id}")
-
-    elif garment_image:
-        try:
+    logger.info(f"--- NEW TRY-ON REQUEST --- User ID: {current_user.id} | Category: {category.value}")
+    base_url = "https://vton-backend.falcondetectives.com"
+    
+    # 1. Validation Logging
+    logger.debug(f"Validating person_image: {person_image.filename} ({person_image.content_type})")
+    if not person_image.content_type.startswith("image/"):
+        logger.warning(f"Validation failed: Invalid person_image format by User {current_user.id}")
+        raise APIException(status_code=400, msg="Invalid person_image format. Must be an image.")
+    
+    if garment_image:
+        logger.debug(f"Validating garment_image: {garment_image.filename} ({garment_image.content_type})")
+        if not garment_image.content_type.startswith("image/"):
+            logger.warning(f"Validation failed: Invalid garment_image format by User {current_user.id}")
+            raise APIException(status_code=400, msg="Invalid garment_image format. Must be an image.")
+    
+    try:
+        # 2. Garment Source Resolution
+        if closet_item_id:
+            logger.info(f"Resolving closet_item_id: {closet_item_id} for User {current_user.id}")
+            item = db.query(models.ClosetItem).filter(
+                models.ClosetItem.id == closet_item_id,
+                models.ClosetItem.user_id == current_user.id
+            ).first()
+            if not item:
+                logger.warning(f"Closet item {closet_item_id} not found or unauthorized for User {current_user.id}")
+                raise APIException(status_code=404, msg="Closet item not found")
+            
+            path_part = item.file_path.replace("\\", "/") 
+            if not path_part.startswith("/"):
+                path_part = "/" + path_part
+            garment_url = f"{base_url}{path_part}"
+            logger.debug(f"Closet item resolved to URL: {garment_url}")
+            
+        elif garment_image:
+            logger.info("Saving uploaded raw garment image...")
             garment_filename = save_upload_file(garment_image)
             garment_url = f"{base_url}/static_uploads/{garment_filename}"
-            logger.info(f"New garment file saved: {garment_filename}")
-        except Exception as e:
-            logger.error("Disk Write Error: Failed to save garment image", exc_info=True)
-            raise HTTPException(status_code=500, detail="Error saving garment image")
-    else:
-        raise HTTPException(status_code=400, detail="Must provide either garment_image or closet_item_id")
+            logger.debug(f"Raw garment saved to URL: {garment_url}")
+        else:
+            raise APIException(status_code=400, msg="Must provide either garment_image or closet_item_id")
 
-    # 2. Process Person Image
-    try:
+        # 3. Process Person Image
+        logger.info("Saving uploaded person image...")
         person_filename = save_upload_file(person_image)
         person_url = f"{base_url}/static_uploads/{person_filename}"
-    except Exception as e:
-        logger.error("Disk Write Error: Failed to save person image", exc_info=True)
-        raise HTTPException(status_code=500, detail="Error saving person image")
+        logger.debug(f"Person image saved to URL: {person_url}")
 
-    # 3. Create entry in local tracking database
-    try:
+        # 4. Database Insertion
+        logger.info("Creating local tracking database record...")
         db_job = models.TryOnJob(
             user_id=current_user.id,
             category=category,
@@ -161,63 +220,111 @@ async def create_tryon_job(
         db.add(db_job)
         db.commit()
         db.refresh(db_job)
-        logger.info(f"Database record created | Job ID: {db_job.id}")
-    except Exception as e:
-        db.rollback()
-        logger.error("Database Transaction Error", exc_info=True)
-        raise HTTPException(status_code=500, detail="Database error while saving job state.")
+        logger.info(f"Local Job created successfully. Internal Job ID: {db_job.id}")
 
-    # 4. Trigger external generation payload
-    try:
-        logger.info(f"Dispatching Job ID {db_job.id} to FASHN.ai servers...")
+        # 5. Trigger FASHN API
+        logger.info(f"Dispatching Job ID {db_job.id} to FASHN API Engine (Resolution: {resolution}, Samples: {num_images})...")
         fashn_job_id = await trigger_vton_job(
             model_image_url=person_url, 
             garment_image_url=garment_url, 
             category=category.value, 
-            garment_desc=garment_desc
+            garment_desc=garment_desc,
+            resolution=resolution,
+            output_format=output_format,
+            num_images=num_images
         )
+        
+        logger.info(f"FASHN API Engine accepted Job {db_job.id}. Assigned FASHN ID: {fashn_job_id}")
         db_job.fashn_job_id = fashn_job_id
         db_job.status = models.JobStatus.PROCESSING
         db.commit()
+        logger.info(f"--- TRY-ON REQUEST COMPLETED SUCCESSFULLY FOR JOB {db_job.id} ---")
+
+        return StandardResponse(
+            status=True,
+            msg="Try-on job created successfully.",
+            data={
+                "id": db_job.id,
+                "user_id": db_job.user_id,
+                "category": db_job.category.value, 
+                "status": db_job.status.value,     
+                "fashn_job_id": db_job.fashn_job_id,
+                "user_image_url": db_job.user_image_url,
+                "garment_image_url": db_job.garment_image_url
+            }
+        )
+        
+    except APIException:
+        raise
     except Exception as e:
-        db_job.status = models.JobStatus.FAILED
-        db.commit()
-        logger.error(f"FASHN API Integration Error on Job ID {db_job.id}: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=502, detail=f"Failed to initiate AI core: {str(e)}")
+        db.rollback()
+        logger.error(f"CRITICAL FAILURE during try-on job creation for User {current_user.id}: {str(e)}", exc_info=True)
+        raise APIException(status_code=500, msg="Failed to initiate AI core. Please try again.")
 
-    return db_job
 
-@app.get("/api/tryon/{job_id}", response_model=schemas.TryOnJobOut)
-async def get_tryon_status(job_id: int, db: Session = Depends(get_db)):
-    # 1. Fetch the local job record
-    db_job = db.query(models.TryOnJob).filter(models.TryOnJob.id == job_id).first()
-    if not db_job:
-        raise HTTPException(status_code=404, detail="Try-on job not found")
+@app.get("/api/tryon/{job_id}", response_model=StandardResponse)
+async def get_tryon_status(
+    job_id: int, 
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user) 
+):
+    logger.info(f"--- STATUS POLL --- User {current_user.id} checking Job ID: {job_id}")
+    try:
+        # 1. Fetch Local Record
+        db_job = db.query(models.TryOnJob).filter(
+            models.TryOnJob.id == job_id,
+            models.TryOnJob.user_id == current_user.id
+        ).first()
+        
+        if not db_job:
+            logger.warning(f"Status poll failed: Job {job_id} not found for User {current_user.id}")
+            raise APIException(status_code=404, msg="Try-on job not found or access denied.")
 
-    # 2. If it is already finished or failed, just return it immediately
-    if db_job.status in [models.JobStatus.COMPLETED, models.JobStatus.FAILED]:
-        return db_job
+        logger.debug(f"Job {job_id} found. Current local status: {db_job.status.value}")
 
-    # 3. If it is still processing, ask FASHN for a live update
-    if db_job.status == models.JobStatus.PROCESSING and db_job.fashn_job_id:
-        try:
-            fashn_status, result_url = await check_vton_status(db_job.fashn_job_id)
+        # 2. Return immediately if not processing
+        if db_job.status in [models.JobStatus.COMPLETED, models.JobStatus.FAILED]:
+            logger.info(f"Job {job_id} is already {db_job.status.value}. Returning cached record.")
+            return StandardResponse(
+                status=True,
+                msg="Job status retrieved.",
+                data={
+                    "id": db_job.id,
+                    "status": db_job.status.value,
+                    "result_image_urls": db_job.result_image_urls
+                }
+            )
 
-            # 4. Map FASHN's server status to our local database
+        # 3. Poll FASHN API if still processing
+        if db_job.status == models.JobStatus.PROCESSING and db_job.fashn_job_id:
+            logger.info(f"Job {job_id} is PROCESSING. Pinging FASHN API (FASHN ID: {db_job.fashn_job_id}) for live status...")
+            fashn_status, result_urls = await check_vton_status(db_job.fashn_job_id)
+            
+            logger.info(f"FASHN API responded with status: '{fashn_status}' for Job {job_id}")
+
+            # 4. Map and Save State
             if fashn_status == "completed":
                 db_job.status = models.JobStatus.COMPLETED
-                db_job.result_image_url = result_url
+                db_job.result_image_urls = result_urls
                 db.commit()
-                logger.info(f"Job {job_id} completed successfully! Result URL saved.")
+                logger.info(f"SUCCESS: Job {job_id} finished generating! Result URL array saved to database.")
                 
             elif fashn_status == "failed":
                 db_job.status = models.JobStatus.FAILED
                 db.commit()
-                logger.warning(f"Job {job_id} failed on FASHN servers.")
-                
-            # If FASHN says 'processing' or 'starting', we do nothing and let it remain PROCESSING
+                logger.error(f"FAILURE: FASHN AI Engine reported a failure for Job {job_id}.")
 
-        except Exception as e:
-            logger.error(f"Error polling FASHN status for Job {job_id}: {str(e)}", exc_info=True)
-
-    return db_job
+        return StandardResponse(
+            status=True,
+            msg="Job status retrieved.",
+            data={
+                "id": db_job.id,
+                "status": db_job.status.value,
+                "result_image_urls": db_job.result_image_urls
+            }
+        )
+    except APIException:
+        raise
+    except Exception as e:
+        logger.error(f"CRITICAL ERROR polling FASHN status for Job {job_id}: {str(e)}", exc_info=True)
+        raise APIException(status_code=500, msg="Internal server error while polling job status.")

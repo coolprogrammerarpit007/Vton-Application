@@ -1,31 +1,55 @@
 import httpx
-import os
+import asyncio
+import json
+import logging
 from app.config import settings
+
+
+# ==========================================
+# 1. Inherit the master logger from main.py
+# ==========================================
+
+logger = logging.getLogger(__name__)
+
+# ==========================================
+# FASHN Endpoint Schemas
+# ==========================================
 
 FASHN_API_URL = "https://api.fashn.ai/v1/run"
 FASHN_STATUS_URL = "https://api.fashn.ai/v1/status"
 
-# Use the API key securely loaded from your .env file
 headers = {
     "Content-Type": "application/json",
     "Authorization": f"Bearer {settings.FASHN_API_KEY}"
 }
 
-async def trigger_vton_job(model_image_url: str, garment_image_url: str, category: str, garment_desc: str = "") -> str:
+async def trigger_vton_job(
+    model_image_url: str, 
+    garment_image_url: str, 
+    category: str, 
+    garment_desc: str = "",
+    resolution: str = "1k",
+    output_format: str = "png",
+    num_images: int = 1
+) -> str:
     """
     Asynchronously fires the structured payload containing assets and prompts to the FASHN.ai tryon-max model.
     """
-    # Build nested target layout schema per official playground specs
+    logger.info(f"[FASHN SERVICE] Triggering try-on job for category '{category}'")
+    
+    
     payload = {
         "model_name": "tryon-max",
         "inputs": {
             "model_image": model_image_url,
             "product_image": garment_image_url,
+            "resolution": resolution,
+            "output_format": output_format,
+            "num_images": num_images 
         }
     }
     
-    # 2. CATEGORY UTILIZATION: Prompt Augmentation
-    # We translate your category (tops, bottoms, one-pieces) into explicit AI instructions
+    # Prompt Augmentation Mapping
     category_instruction = ""
     if category == "tops":
         category_instruction = "worn on the upper body as a top"
@@ -34,47 +58,93 @@ async def trigger_vton_job(model_image_url: str, garment_image_url: str, categor
     elif category == "one-pieces":
         category_instruction = "worn as a full body one-piece dress or suit"
     
-    # 3. Combine the auto-instruction with the user's manual description (if any)
     final_prompt = category_instruction
     if garment_desc and garment_desc.strip():
-        # If the user typed something like "tucked in", we append it
         final_prompt = f"{category_instruction}, {garment_desc.strip()}"
         
-    # Inject the enhanced prompt into the payload
     if final_prompt:
         payload["inputs"]["prompt"] = final_prompt
 
-    async with httpx.AsyncClient() as client:
-        response = await client.post(FASHN_API_URL, json=payload, headers=headers, timeout=30.0)
-        
-        if response.status_code != 200:
-            raise Exception(f"FASHN API Engine connection error: {response.text}")
+    logger.info(f"[FASHN SERVICE] Payload structure successfully built. Outbound content check.")
+    logger.debug(f"[FASHN SERVICE] Payload details: {json.dumps(payload)}")
+
+    max_retries = 3
+    for attempt in range(max_retries):
+        logger.info(f"[FASHN SERVICE] Dispatching POST request to {FASHN_API_URL} (Attempt {attempt + 1}/{max_retries})")
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(FASHN_API_URL, json=payload, headers=headers, timeout=30.0)
+                response.raise_for_status() 
+                
+                data = response.json()
+                fashn_id = data.get("id")
+                logger.info(f"[FASHN SERVICE] Successfully triggered job. Received FASHN ID: {fashn_id}")
+                return fashn_id
+                
+        except httpx.RequestError as exc:
+            logger.warning(f"[FASHN SERVICE] Network timeout or connection error on attempt {attempt + 1}: {exc}")
+        except httpx.HTTPStatusError as exc:
+            logger.error(f"[FASHN SERVICE] API rejected request on attempt {attempt + 1}. HTTP {exc.response.status_code}: {exc.response.text}")
             
-        data = response.json()
-        return data.get("id")
+        if attempt < max_retries - 1:
+            logger.info(f"[FASHN SERVICE] Sleeping for 2 seconds before retrying...")
+            await asyncio.sleep(2)
+            
+    logger.error("[FASHN SERVICE] CRITICAL: All 3 attempts to reach FASHN API failed.")
+    raise Exception("Failed to connect to FASHN API after multiple attempts.")
     
-    
-FASHN_STATUS_URL = "https://api.fashn.ai/v1/status"
 
 async def check_vton_status(fashn_job_id: str):
-    """
-    Checks the current status of an ongoing FASHN.ai prediction.
-    Returns a tuple: (status_string, result_image_url_or_none)
-    """
-    async with httpx.AsyncClient() as client:
-        # 1. Make a GET request to the official status endpoint using the specific job ID
-        response = await client.get(f"{FASHN_STATUS_URL}/{fashn_job_id}", headers=headers, timeout=10.0)
-        
-        if response.status_code != 200:
-            raise Exception(f"FASHN Status Retrieval Error: {response.text}")
+    logger.info(f"[FASHN SERVICE] Polling status for FASHN ID: {fashn_job_id}")
+    try:
+        async with httpx.AsyncClient() as client:
+            target_url = f"{FASHN_STATUS_URL}/{fashn_job_id}"
+            response = await client.get(target_url, headers=headers, timeout=10.0)
+            response.raise_for_status()
             
-        data = response.json()
-        
-        # 2. Extract the exact status state 
-        status = data.get("status") 
-        
-        # 3. Securely extract the output URL if the job is finished
-        output = data.get("output")
-        result_url = output[0] if isinstance(output, list) and len(output) > 0 else None
-        
-        return status, result_url
+            data = response.json()
+            status = data.get("status") 
+            output = data.get("output")
+            
+            logger.info(f"[FASHN SERVICE] Job {fashn_job_id} reported status: '{status}'")
+            return status, output 
+            
+    except httpx.HTTPStatusError as exc:
+        logger.error(f"[FASHN SERVICE] API returned HTTP {exc.response.status_code} while checking status for {fashn_job_id}: {exc.response.text}")
+        raise Exception(f"Failed to fetch status: HTTP {exc.response.status_code}")
+    except httpx.RequestError as exc:
+        logger.error(f"[FASHN SERVICE] Network error while checking status for {fashn_job_id}: {str(exc)}")
+        raise Exception(f"Failed to fetch status due to network error: {str(exc)}")
+    
+
+async def trigger_generic_fashn_job(model_name: str, inputs: dict) -> str:
+    """
+    Universal service to trigger any FASHN.ai model (Video, Face Swap, Bg Remove, etc.)
+    """
+    logger.info(f"[FASHN SERVICE] Universal engine initializing task for model: {model_name}")
+    payload = {
+        "model_name": model_name,
+        "inputs": inputs
+    }
+
+    max_retries = 3
+    for attempt in range(max_retries):
+        logger.info(f"[FASHN SERVICE] Dispatching generic POST request (Attempt {attempt + 1}/{max_retries})")
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(FASHN_API_URL, json=payload, headers=headers, timeout=45.0)
+                response.raise_for_status() 
+                fashn_id = response.json().get("id")
+                logger.info(f"[FASHN SERVICE] Generic engine task accepted. FASHN ID: {fashn_id}")
+                return fashn_id
+                
+        except httpx.RequestError as exc:
+            logger.warning(f"[FASHN SERVICE] Network error on attempt {attempt + 1}: {exc}")
+        except httpx.HTTPStatusError as exc:
+            logger.error(f"[FASHN SERVICE] FASHN API returned an error HTTP {exc.response.status_code}: {exc.response.text}")
+            
+        if attempt < max_retries - 1:
+            await asyncio.sleep(2)
+            
+    logger.error(f"[FASHN SERVICE] CRITICAL: Generic model activation failed for {model_name}.")
+    raise Exception(f"Failed to connect to FASHN API for model {model_name}.")
