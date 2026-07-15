@@ -165,12 +165,12 @@ async def global_exception_handler(request: Request, exc: Exception):
 # *************************************************************************************
 
 
-@app.get("/")
+@app.get("/",tags=["VTON Try-On API"])
 def read_root():
     return {"message": "VTON Core Engine is running"}
 
 
-@app.post("/api/tryon", response_model=StandardResponse)
+@app.post("/api/tryon", response_model=StandardResponse,tags=["VTON Try-On API"])
 async def create_tryon_job(
     category: models.GarmentCategory = Form(...),
     garment_desc: Optional[str] = Form(""), 
@@ -284,7 +284,7 @@ async def create_tryon_job(
         raise APIException(status_code=500, msg="Failed to initiate AI core. Please try again.")
 
 
-@app.get("/api/tryon/{job_id}", response_model=StandardResponse)
+@app.get("/api/tryon/{job_id}", response_model=StandardResponse,tags=["VTON Try-On API"])
 async def get_tryon_status(
     job_id: int, 
     db: Session = Depends(get_db),
@@ -355,7 +355,7 @@ async def get_tryon_status(
     
     
     
-@app.get("/api/universal-status/{module_type}/{job_id}", response_model=StandardResponse)
+@app.get("/api/universal-status/{module_type}/{job_id}", response_model=StandardResponse,tags=["VTON Try-On API"])
 async def universal_status_check(
     module_type: MasterModuleType,
     job_id: int, 
