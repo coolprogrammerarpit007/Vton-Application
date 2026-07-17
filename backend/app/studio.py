@@ -258,7 +258,11 @@ async def process_background_change_chain(job_id: int, original_url: str, new_bg
 
         # Step 2: Use 'edit' Model to Generate New Background behind subject
         logger.info(f"Job {job_id}: Applying edit model for background [{new_bg_prompt}]...")
-        edit_prompt = f"{new_bg_prompt}. The person is fully immersed in this environment. Global illumination, matching color grading, environmental light bleeding onto the subject, seamless shadows, highly realistic composite."        
+        # edit_prompt = f"{new_bg_prompt}. The person is fully immersed in this environment. Global illumination, matching color grading, environmental light bleeding onto the subject, seamless shadows, highly realistic composite."     
+        
+        # We pass the prompt directly because the route has already injected 
+        # the blending/global illumination instructions.
+        edit_prompt = new_bg_prompt   
         inputs = {
             "image": transparent_img_url, 
             "prompt": edit_prompt
@@ -298,6 +302,44 @@ async def process_background_change_chain(job_id: int, original_url: str, new_bg
         db.close()
 
 
+# @router.post("/change-background", response_model=StandardResponse)
+# async def change_background(
+#     background_tasks: BackgroundTasks,
+#     original_image: UploadFile = File(...),
+#     new_background_prompt: str = Form("In front of the Taj Mahal, cinematic lighting, 4k"),
+#     reference_bg_image: Optional[UploadFile] = File(None),
+#     db: Session = Depends(get_db),
+#     current_user: models.User = Depends(get_current_user)
+# ):
+#     orig_url = await process_upload(original_image)
+    
+#     # Process the reference image if the user uploaded one
+#     ref_bg_url = None
+#     if reference_bg_image:
+#         ref_bg_url = await process_upload(reference_bg_image)
+        
+#     # Save both URLs to the JSON column for tracking
+#     input_data = {"original_image": orig_url, "bg_prompt": new_background_prompt}
+#     if ref_bg_url:
+#         input_data["reference_bg_url"] = ref_bg_url
+
+#     db_job = models.StudioJob(
+#         user_id=current_user.id,
+#         job_type=models.StudioJobType.BACKGROUND_CHANGE,
+#         input_data=input_data
+#     )
+#     db.add(db_job); db.commit(); db.refresh(db_job)
+
+#     # Dispatch the chain with the new reference URL
+#     background_tasks.add_task(process_background_change_chain, db_job.id, orig_url, new_background_prompt, ref_bg_url)
+
+#     return StandardResponse(
+#         status=True, 
+#         msg="Background replacement chain queued successfully.", 
+#         data={"job_id": db_job.id, "status": db_job.status.value}
+#     )
+    
+    
 @router.post("/change-background", response_model=StandardResponse)
 async def change_background(
     background_tasks: BackgroundTasks,
@@ -314,8 +356,17 @@ async def change_background(
     if reference_bg_image:
         ref_bg_url = await process_upload(reference_bg_image)
         
-    # Save both URLs to the JSON column for tracking
-    input_data = {"original_image": orig_url, "bg_prompt": new_background_prompt}
+    # --- THE MAGIC FIX: Prompt Harmonization Injection ---
+    # We intercept the base prompt and force the diffusion model to blend the lighting natively.
+    harmonized_prompt = (
+        f"{new_background_prompt.strip()}. "
+        "The person is fully immersed in this environment. Global illumination, "
+        "matching color grading, environmental light bleeding onto the subject, "
+        "seamless shadows, highly realistic photographic composite."
+    )
+        
+    # Save both URLs and the newly formatted prompt to the JSON column for tracking
+    input_data = {"original_image": orig_url, "bg_prompt": harmonized_prompt}
     if ref_bg_url:
         input_data["reference_bg_url"] = ref_bg_url
 
@@ -326,15 +377,14 @@ async def change_background(
     )
     db.add(db_job); db.commit(); db.refresh(db_job)
 
-    # Dispatch the chain with the new reference URL
-    background_tasks.add_task(process_background_change_chain, db_job.id, orig_url, new_background_prompt, ref_bg_url)
+    # Dispatch the chain with the NEW harmonized prompt
+    background_tasks.add_task(process_background_change_chain, db_job.id, orig_url, harmonized_prompt, ref_bg_url)
 
     return StandardResponse(
         status=True, 
         msg="Background replacement chain queued successfully.", 
         data={"job_id": db_job.id, "status": db_job.status.value}
     )
-    
     
     
 # ==========================================
