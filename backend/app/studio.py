@@ -258,8 +258,7 @@ async def process_background_change_chain(job_id: int, original_url: str, new_bg
 
         # Step 2: Use 'edit' Model to Generate New Background behind subject
         logger.info(f"Job {job_id}: Applying edit model for background [{new_bg_prompt}]...")
-        edit_prompt = f"add a realistic background behind the person: {new_bg_prompt}, seamless lighting and composition"
-        
+        edit_prompt = f"{new_bg_prompt}. The person is fully immersed in this environment. Global illumination, matching color grading, environmental light bleeding onto the subject, seamless shadows, highly realistic composite."        
         inputs = {
             "image": transparent_img_url, 
             "prompt": edit_prompt
