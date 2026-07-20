@@ -1,6 +1,7 @@
 import os
 
 from fastapi import FastAPI, Depends, File, UploadFile, Form,Request,APIRouter
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 import traceback
 from fastapi.staticfiles import StaticFiles
@@ -21,7 +22,7 @@ from .schemas import StandardResponse
 from .history import router as history_router
 from .studio import router as studio_router
 from .three_sixty import router as three_sixty_router
-from .image_utils import router as image_utils_router
+# from .image_utils import router as image_utils_router
 
 from .fashn_service import trigger_vton_job, check_vton_status
 from .models import MasterModuleType
@@ -88,7 +89,7 @@ app.include_router(outfit_router)
 app.include_router(three_sixty_router)
 app.include_router(studio_router)
 # MOUNT SMART CROPPING ROUTER HERE:
-app.include_router(image_utils_router)
+# app.include_router(image_utils_router)
 app.mount("/static_uploads", StaticFiles(directory="static_uploads"), name="static_uploads")
 
 
@@ -164,6 +165,37 @@ async def global_exception_handler(request: Request, exc: Exception):
         }
     )
         
+        
+# ---------------------------------------------------------
+# 3. PYDANTIC VALIDATION ERROR HANDLER
+# ---------------------------------------------------------
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """
+    Catches FastAPI/Pydantic validation errors (e.g., missing fields, bad email format)
+    and forces them into our StandardResponse JSON format.
+    """
+    errors = exc.errors()
+    
+    # Extract the first error message to create a clean, readable 'msg'
+    error_msg = "Data Validation Failed"
+    if errors:
+        first_error = errors[0]
+        # Join the location array (e.g., 'body', 'email') to show which field failed
+        field = " -> ".join(str(loc) for loc in first_error.get("loc", []))
+        msg = first_error.get("msg", "")
+        error_msg = f"Validation Error on '{field}': {msg}"
+        
+    logger.warning(f"Pydantic Validation Error: {error_msg}")
+    
+    return JSONResponse(
+        status_code=422,
+        content={
+            "status": False,
+            "msg": error_msg,
+            "data": errors # Keep the raw error array in data for frontend debugging
+        }
+    )
 
 # *************************************************************************************
 

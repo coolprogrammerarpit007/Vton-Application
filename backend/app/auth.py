@@ -129,45 +129,85 @@ def get_me(current_user: models.User = Depends(get_current_user)):
     )
     
     
+# @router.post("/login", response_model=StandardResponse)
+# def login_user(user: UserLogin, db: Session = Depends(get_db)):
+#     logger.info(f"Login attempt for email: {user.email}")
+    
+#     try:
+#         # 1. Fetch user from database
+#         db_user = db.query(models.User).filter(models.User.email == user.email).first()
+        
+#         # 2. Check if user exists
+#         if not db_user:
+#             logger.warning(f"Login failed: No account found for email {user.email}")
+#             raise APIException(status_code=401, msg="Invalid credentials")
+        
+#         # 3. Check password
+#         if not verify_password(user.password, db_user.hashed_password):
+#             logger.warning(f"Login failed: Incorrect password for email {user.email}")
+#             raise APIException(status_code=401, msg="Invalid credentials")
+        
+#         # 4. Success State
+#         logger.info(f"User logged in successfully: {db_user.username} (ID: {db_user.id})")
+#         access_token = create_access_token(data={"sub": str(db_user.id)})
+        
+#         return StandardResponse(
+#             status=True,
+#             msg="User logged in successfully",
+#             data={
+#                 "access_token": access_token, 
+#                 "token_type": "bearer"
+#             }
+#         )
+        
+        
+#     except APIException:
+#         #THIS: Let our custom exceptions pass through untouched
+#         raise
+        
+    
+#     except Exception as e:
+#         # Catch severe server errors (e.g., MySQL database goes offline)
+#         logger.error(f"Critical error during login for {user.email}: {str(e)}")
+#         raise APIException(status_code=500, msg="Internal server error. Please try again later.")
+
+
 @router.post("/login", response_model=StandardResponse)
 def login_user(user: UserLogin, db: Session = Depends(get_db)):
     logger.info(f"Login attempt for email: {user.email}")
     
     try:
-        # 1. Fetch user from database
         db_user = db.query(models.User).filter(models.User.email == user.email).first()
         
-        # 2. Check if user exists
         if not db_user:
             logger.warning(f"Login failed: No account found for email {user.email}")
             raise APIException(status_code=401, msg="Invalid credentials")
         
-        # 3. Check password
         if not verify_password(user.password, db_user.hashed_password):
             logger.warning(f"Login failed: Incorrect password for email {user.email}")
             raise APIException(status_code=401, msg="Invalid credentials")
         
-        # 4. Success State
         logger.info(f"User logged in successfully: {db_user.username} (ID: {db_user.id})")
         access_token = create_access_token(data={"sub": str(db_user.id)})
         
+        # CHANGED: Added user details to the response data payload
         return StandardResponse(
             status=True,
             msg="User logged in successfully",
             data={
                 "access_token": access_token, 
-                "token_type": "bearer"
+                "token_type": "bearer",
+                "user": {
+                    "id": db_user.id,
+                    "username": db_user.username,
+                    "email": db_user.email
+                }
             }
         )
         
-        
     except APIException:
-        #THIS: Let our custom exceptions pass through untouched
         raise
-        
-    
     except Exception as e:
-        # Catch severe server errors (e.g., MySQL database goes offline)
         logger.error(f"Critical error during login for {user.email}: {str(e)}")
         raise APIException(status_code=500, msg="Internal server error. Please try again later.")
 
@@ -201,13 +241,18 @@ def register_user(user: UserCreate, db: Session = Depends(get_db)):
         logger.info(f"User registered successfully: {new_user.username} (ID: {new_user.id})")
         access_token = create_access_token(data={"sub": str(new_user.id)})
         
-        # 4. Success Response
+       # CHANGED: Added user details to the response data payload
         return StandardResponse(
             status=True,
             msg="New User Registered successfully",
             data={
                 "access_token": access_token, 
-                "token_type": "bearer"
+                "token_type": "bearer",
+                "user": {
+                    "id": new_user.id,
+                    "username": new_user.username,
+                    "email": new_user.email
+                }
             }
         )
         
