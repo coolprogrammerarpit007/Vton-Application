@@ -22,6 +22,8 @@ from .schemas import StandardResponse
 from .history import router as history_router
 from .studio import router as studio_router
 from .three_sixty import router as three_sixty_router
+from .dashboard import router as dashboard_router
+from .profile import router as profile_router
 # from .image_utils import router as image_utils_router
 
 from .fashn_service import trigger_vton_job, check_vton_status
@@ -88,6 +90,8 @@ app.include_router(history_router)
 app.include_router(outfit_router)
 app.include_router(three_sixty_router)
 app.include_router(studio_router)
+app.include_router(dashboard_router)
+app.include_router(profile_router)
 # MOUNT SMART CROPPING ROUTER HERE:
 # app.include_router(image_utils_router)
 app.mount("/static_uploads", StaticFiles(directory="static_uploads"), name="static_uploads")
@@ -98,7 +102,8 @@ origins = [
     "http://vton.falcondetectives.com",
     "http://localhost:5500", # Keep this for local testing
     "http://127.0.0.1:5500",
-    "http://localhost:5173"
+    "http://localhost:5173",
+    "http://192.168.1.8:5173"
 ]
 
 app.add_middleware(
@@ -206,13 +211,129 @@ def read_root():
     return {"message": "VTON Core Engine is running"}
 
 
-@app.post("/api/tryon", response_model=StandardResponse,tags=["VTON Try-On API"])
+# @app.post("/api/tryon", response_model=StandardResponse,tags=["VTON Try-On API"])
+# async def create_tryon_job(
+#     category: models.GarmentCategory = Form(...),
+#     closet_item_id: Optional[int] = Form(None),             # Option A: Pull from DB (Strict Validation)
+#     garment_image: Optional[UploadFile] = File(None),       # Option B: Raw Upload (Bypasses Validation)
+#     system_model_id: Optional[int] = Form(None),            # Option A: Pre-loaded System Model
+#     person_image: Optional[UploadFile] = File(None),        # Option B: Manual Custom Canvas Upload
+#     garment_desc: Optional[str] = Form(""), 
+#     resolution: str = Form("1k"),
+#     output_format: str = Form("png"),
+#     num_images: int = Form(1),
+#     db: Session = Depends(get_db),
+#     current_user: models.User = Depends(get_current_user)
+# ):
+#     logger.info(f"--- NEW TRY-ON REQUEST --- User ID: {current_user.id} | Category: {category.value}")
+#     base_url = "https://vton-backend.falcondetectives.com"
+    
+#     # 1. Validation Logging
+#     logger.debug(f"Validating person_image: {person_image.filename} ({person_image.content_type})")
+#     if not person_image.content_type.startswith("image/"):
+#         logger.warning(f"Validation failed: Invalid person_image format by User {current_user.id}")
+#         raise APIException(status_code=400, msg="Invalid person_image format. Must be an image.")
+    
+#     if garment_image:
+#         logger.debug(f"Validating garment_image: {garment_image.filename} ({garment_image.content_type})")
+#         if not garment_image.content_type.startswith("image/"):
+#             logger.warning(f"Validation failed: Invalid garment_image format by User {current_user.id}")
+#             raise APIException(status_code=400, msg="Invalid garment_image format. Must be an image.")
+    
+#     try:
+#         # 2. Garment Source Resolution
+#         if closet_item_id:
+#             logger.info(f"Resolving closet_item_id: {closet_item_id} for User {current_user.id}")
+#             item = db.query(models.ClosetItem).filter(
+#                 models.ClosetItem.id == closet_item_id,
+#                 models.ClosetItem.user_id == current_user.id
+#             ).first()
+#             if not item:
+#                 logger.warning(f"Closet item {closet_item_id} not found or unauthorized for User {current_user.id}")
+#                 raise APIException(status_code=404, msg="Closet item not found")
+            
+#             path_part = item.file_path.replace("\\", "/") 
+#             if not path_part.startswith("/"):
+#                 path_part = "/" + path_part
+#             garment_url = f"{base_url}{path_part}"
+#             logger.debug(f"Closet item resolved to URL: {garment_url}")
+            
+#         elif garment_image:
+#             logger.info("Saving uploaded raw garment image...")
+#             garment_filename = save_upload_file(garment_image)
+#             garment_url = f"{base_url}/static_uploads/{garment_filename}"
+#             logger.debug(f"Raw garment saved to URL: {garment_url}")
+#         else:
+#             raise APIException(status_code=400, msg="Must provide either garment_image or closet_item_id")
+
+#         # 3. Process Person Image
+#         logger.info("Saving uploaded person image...")
+#         person_filename = save_upload_file(person_image)
+#         person_url = f"{base_url}/static_uploads/{person_filename}"
+#         logger.debug(f"Person image saved to URL: {person_url}")
+
+#         # 4. Database Insertion
+#         logger.info("Creating local tracking database record...")
+#         db_job = models.TryOnJob(
+#             user_id=current_user.id,
+#             category=category,
+#             user_image_url=person_url,
+#             garment_image_url=garment_url,
+#             status=models.JobStatus.PENDING
+#         )
+#         db.add(db_job)
+#         db.commit()
+#         db.refresh(db_job)
+#         logger.info(f"Local Job created successfully. Internal Job ID: {db_job.id}")
+
+#         # 5. Trigger FASHN API
+#         logger.info(f"Dispatching Job ID {db_job.id} to FASHN API Engine (Resolution: {resolution}, Samples: {num_images})...")
+#         fashn_job_id = await trigger_vton_job(
+#             model_image_url=person_url, 
+#             garment_image_url=garment_url, 
+#             category=category.value, 
+#             garment_desc=garment_desc,
+#             resolution=resolution,
+#             output_format=output_format,
+#             num_images=num_images
+#         )
+        
+#         logger.info(f"FASHN API Engine accepted Job {db_job.id}. Assigned FASHN ID: {fashn_job_id}")
+#         db_job.fashn_job_id = fashn_job_id
+#         db_job.status = models.JobStatus.PROCESSING
+#         db.commit()
+#         logger.info(f"--- TRY-ON REQUEST COMPLETED SUCCESSFULLY FOR JOB {db_job.id} ---")
+
+#         return StandardResponse(
+#             status=True,
+#             msg="Try-on job created successfully.",
+#             data={
+#                 "id": db_job.id,
+#                 "user_id": db_job.user_id,
+#                 "category": db_job.category.value, 
+#                 "status": db_job.status.value,     
+#                 "fashn_job_id": db_job.fashn_job_id,
+#                 "user_image_url": db_job.user_image_url,
+#                 "garment_image_url": db_job.garment_image_url
+#             }
+#         )
+        
+#     except APIException:
+#         raise
+#     except Exception as e:
+#         db.rollback()
+#         logger.error(f"CRITICAL FAILURE during try-on job creation for User {current_user.id}: {str(e)}", exc_info=True)
+#         raise APIException(status_code=500, msg="Failed to initiate AI core. Please try again.")
+
+
+@app.post("/api/tryon", response_model=StandardResponse, tags=["VTON Try-On API"])
 async def create_tryon_job(
     category: models.GarmentCategory = Form(...),
+    closet_item_id: Optional[int] = Form(None),             # Option A: Pull from DB (Strict Validation)
+    garment_image: Optional[UploadFile] = File(None),       # Option B: Raw Upload (Bypasses Validation)
+    system_model_id: Optional[int] = Form(None),            # Option A: Pre-loaded System Model
+    person_image: Optional[UploadFile] = File(None),        # Option B: Manual Custom Canvas Upload
     garment_desc: Optional[str] = Form(""), 
-    person_image: UploadFile = File(...),
-    garment_image: Optional[UploadFile] = File(None),
-    closet_item_id: Optional[int] = Form(None),
     resolution: str = Form("1k"),
     output_format: str = Form("png"),
     num_images: int = Form(1),
@@ -222,51 +343,74 @@ async def create_tryon_job(
     logger.info(f"--- NEW TRY-ON REQUEST --- User ID: {current_user.id} | Category: {category.value}")
     base_url = "https://vton-backend.falcondetectives.com"
     
-    # 1. Validation Logging
-    logger.debug(f"Validating person_image: {person_image.filename} ({person_image.content_type})")
-    if not person_image.content_type.startswith("image/"):
-        logger.warning(f"Validation failed: Invalid person_image format by User {current_user.id}")
-        raise APIException(status_code=400, msg="Invalid person_image format. Must be an image.")
-    
-    if garment_image:
-        logger.debug(f"Validating garment_image: {garment_image.filename} ({garment_image.content_type})")
-        if not garment_image.content_type.startswith("image/"):
-            logger.warning(f"Validation failed: Invalid garment_image format by User {current_user.id}")
-            raise APIException(status_code=400, msg="Invalid garment_image format. Must be an image.")
-    
     try:
-        # 2. Garment Source Resolution
+        # 1. Resolve Garment Source & Extract Demographic Info if Available
+        closet_demographic = None
+        
         if closet_item_id:
             logger.info(f"Resolving closet_item_id: {closet_item_id} for User {current_user.id}")
-            item = db.query(models.ClosetItem).filter(
+            closet_item = db.query(models.ClosetItem).filter(
                 models.ClosetItem.id == closet_item_id,
                 models.ClosetItem.user_id == current_user.id
             ).first()
-            if not item:
-                logger.warning(f"Closet item {closet_item_id} not found or unauthorized for User {current_user.id}")
-                raise APIException(status_code=404, msg="Closet item not found")
             
-            path_part = item.file_path.replace("\\", "/") 
+            if not closet_item:
+                raise APIException(status_code=404, msg="Selected closet garment not found.")
+                
+            closet_demographic = closet_item.demographic
+            
+            path_part = closet_item.file_path.replace("\\", "/") 
             if not path_part.startswith("/"):
                 path_part = "/" + path_part
             garment_url = f"{base_url}{path_part}"
-            logger.debug(f"Closet item resolved to URL: {garment_url}")
             
         elif garment_image:
-            logger.info("Saving uploaded raw garment image...")
+            logger.debug(f"Validating custom garment_image: {garment_image.filename}")
+            if not garment_image.content_type.startswith("image/"):
+                raise APIException(status_code=400, msg="Invalid garment_image format. Must be an image.")
+            
+            logger.info("Saving uploaded custom garment image...")
             garment_filename = save_upload_file(garment_image)
             garment_url = f"{base_url}/static_uploads/{garment_filename}"
-            logger.debug(f"Raw garment saved to URL: {garment_url}")
+            
         else:
-            raise APIException(status_code=400, msg="Must provide either garment_image or closet_item_id")
+            raise APIException(status_code=400, msg="Workspace requires either a closet_item_id or a garment_image upload.")
 
-        # 3. Process Person Image
-        logger.info("Saving uploaded person image...")
-        person_filename = save_upload_file(person_image)
-        person_url = f"{base_url}/static_uploads/{person_filename}"
-        logger.debug(f"Person image saved to URL: {person_url}")
+        # 2. Resolve Model Persona and Implement Demographic Isolation Guardrails
+        if system_model_id:
+            logger.info(f"Resolving system_model_id: {system_model_id}")
+            sys_model = db.query(models.SystemModel).filter(
+                models.SystemModel.id == system_model_id,
+                models.SystemModel.is_active == True
+            ).first()
+            
+            if not sys_model:
+                raise APIException(status_code=404, msg="Selected system model variant not found.")
+                
+            # --- DEMOGRAPHIC ISOLATION GUARDRAIL ---
+            # Only blocks if the garment came from the closet AND the tags mismatch
+            if closet_demographic and sys_model.demographic != closet_demographic:
+                logger.warning(f"Demographic conflict: Model ({sys_model.demographic.value}) vs Garment ({closet_demographic.value})")
+                raise APIException(
+                    status_code=400, 
+                    msg=f"Demographic Isolation Conflict: Cannot apply a '{closet_demographic.value}' garment onto a '{sys_model.demographic.value}' profile layout."
+                )
+                
+            person_url = sys_model.base_image_url
+            
+        elif person_image:
+            logger.debug(f"Validating custom person_image: {person_image.filename}")
+            if not person_image.content_type.startswith("image/"):
+                raise APIException(status_code=400, msg="Invalid person_image format. Must be an image.")
+            
+            logger.info("Saving uploaded custom person image...")
+            person_filename = save_upload_file(person_image)
+            person_url = f"{base_url}/static_uploads/{person_filename}"
+            
+        else:
+            raise APIException(status_code=400, msg="Workspace requires either a system_model_id or a person_image asset.")
 
-        # 4. Database Insertion
+        # 3. Database Insertion
         logger.info("Creating local tracking database record...")
         db_job = models.TryOnJob(
             user_id=current_user.id,
@@ -278,10 +422,9 @@ async def create_tryon_job(
         db.add(db_job)
         db.commit()
         db.refresh(db_job)
-        logger.info(f"Local Job created successfully. Internal Job ID: {db_job.id}")
 
-        # 5. Trigger FASHN API
-        logger.info(f"Dispatching Job ID {db_job.id} to FASHN API Engine (Resolution: {resolution}, Samples: {num_images})...")
+        # 4. Trigger FASHN API
+        logger.info(f"Dispatching Job ID {db_job.id} to FASHN API Engine...")
         fashn_job_id = await trigger_vton_job(
             model_image_url=person_url, 
             garment_image_url=garment_url, 
@@ -292,15 +435,13 @@ async def create_tryon_job(
             num_images=num_images
         )
         
-        logger.info(f"FASHN API Engine accepted Job {db_job.id}. Assigned FASHN ID: {fashn_job_id}")
         db_job.fashn_job_id = fashn_job_id
         db_job.status = models.JobStatus.PROCESSING
         db.commit()
-        logger.info(f"--- TRY-ON REQUEST COMPLETED SUCCESSFULLY FOR JOB {db_job.id} ---")
 
         return StandardResponse(
             status=True,
-            msg="Try-on job created successfully.",
+            msg="Try-on inference execution initialized successfully.",
             data={
                 "id": db_job.id,
                 "user_id": db_job.user_id,

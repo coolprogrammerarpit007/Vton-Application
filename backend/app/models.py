@@ -1,14 +1,20 @@
-from sqlalchemy import Column, Integer, String, Enum, ForeignKey, DateTime, func,JSON
-from sqlalchemy.orm import relationship,Mapped,mapped_column
+from sqlalchemy import Column, Integer, String, Enum, ForeignKey, DateTime, Boolean, func,JSON  
+from app.database import Base
+from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 import enum
 from datetime import datetime
-from app.database import Base
+
 
 
 
     
-
+# Unified Demographic Enum
+class TargetDemographic(str, enum.Enum):
+    MAN = "man"
+    WOMAN = "woman"
+    KIDS = "kids"
+    
 
 class GarmentCategory(str, enum.Enum):
     TOPS = "tops"
@@ -33,6 +39,12 @@ class User(Base):
     username = Column(String(50), nullable=False)
     email = Column(String(100), unique=True, index=True, nullable=False)
     hashed_password = Column(String(255), nullable=False)
+    
+    # NEW PROFILE COLUMNS ADDED
+    full_name = Column(String(100), nullable=True)
+    avatar_url = Column(String(255), nullable=True)
+    plan_name = Column(String(50), default="PRO", nullable=False)
+    
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # Relationship to track all try-on requests made by this user
@@ -59,13 +71,30 @@ class TryOnJob(Base):
     user = relationship("User", back_populates="jobs")
     
     
+# models.py
 class ClosetItem(Base):
     __tablename__ = "closet_items"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id")) # Links to your existing users table
-    file_path = Column(String(255), nullable=False)   # Stores where the image lives on the server
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    file_path = Column(String(255), nullable=False)   
     label = Column(String(100), default="Untitled Garment")
+    
+    
+    category = Column(String(50), default=GarmentCategory.TOPS.value, nullable=False)
+    
+    # demographic = Column(Enum(TargetDemographic), default=TargetDemographic.WOMAN, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+# Dedicated System Model Catalog Table
+class SystemModel(Base):
+    __tablename__ = "system_models"
+
+    id = Column(Integer, primary_key=True, index=True)
+    model_name = Column(String(100), nullable=False)
+    base_image_url = Column(String(255), nullable=False)
+    demographic = Column(Enum(TargetDemographic), nullable=False)
+    is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
     
@@ -95,6 +124,9 @@ class OutfitJob(Base):
     
     # Gave the prompt a bit more room just in case it gets detailed
     styling_prompt = Column(String(1024), nullable=True) 
+    
+   
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # Links to the multiple garments
     garments = relationship("OutfitGarment", back_populates="outfit_job", cascade="all, delete-orphan")

@@ -1,6 +1,6 @@
 import logging
 import asyncio
-from fastapi import APIRouter, Depends, Form, File, UploadFile, BackgroundTasks
+from fastapi import APIRouter, Depends, Form, File, UploadFile, BackgroundTasks,Query
 from sqlalchemy.orm import Session
 from typing import Optional
 
@@ -12,11 +12,17 @@ from .fashn_service import trigger_generic_fashn_job, check_vton_status
 from .schemas import StandardResponse
 from .exceptions import APIException
 
+import json
+
 
 
 logger = logging.getLogger(__name__)
+
+
 router = APIRouter(prefix="/api/studio", tags=["AI Creative Studio"])
 base_url = "https://vton-backend.falcondetectives.com"
+
+
 
 def validate_image(file: UploadFile):
     if not file.content_type.startswith("image/"):
@@ -229,18 +235,37 @@ async def image_to_video(
     except Exception as e:
         db.rollback()
         raise APIException(status_code=500, msg=str(e))
-# ==========================================
-# 4. BACKGROUND REPLACEMENT (2-Step Chain via Edit Model)
-# ==========================================
-async def process_background_change_chain(job_id: int, original_url: str, new_bg_prompt: str,reference_bg_url:Optional[str] = None):
-    """Background worker: strips bg, then uses FASHN 'edit' model to apply new background."""
+
+
+# ==============================================================================
+# BACKGROUND WORKER: 2-Step Advanced Background Replacement Chain
+# ==============================================================================
+async def process_advanced_background_chain(
+    job_id: int, 
+    original_url: str, 
+    harmonized_prompt: str,
+    reference_bg_url: Optional[str],
+    resolution: str,
+    generation_mode: str
+):
+    """
+    Executes the 2-step FASHN pipeline: 
+    1. 'background-remove' to isolate the subject.
+    2. 'edit' to generate the new background with global illumination.
+    """
     db = SessionLocal()
     try:
         job = db.query(models.StudioJob).filter(models.StudioJob.id == job_id).first()
-        if not job: return
+        if not job: 
+            return
 
-        # Step 1: Remove Background
-        logger.info(f"Job {job_id}: Stripping background...")
+        job.status = models.JobStatus.PROCESSING
+        db.commit()
+
+        # ---------------------------------------------------------
+        # STEP 1: Isolate the Subject (Background Remove API)
+        # ---------------------------------------------------------
+        logger.info(f"Job {job_id} [Step 1]: Stripping original background...")
         bg_remove_id = await trigger_generic_fashn_job(
             model_name="background-remove",
             inputs={"image": original_url}
@@ -251,141 +276,128 @@ async def process_background_change_chain(job_id: int, original_url: str, new_bg
             await asyncio.sleep(3)
             status, output = await check_vton_status(bg_remove_id)
             if status == "completed":
+                # API returns an array, extract the first URL
                 transparent_img_url = output[0] if isinstance(output, list) else output
                 break
             elif status == "failed":
-                raise Exception("Background removal step failed.")
+                raise Exception("FASHN 'background-remove' step failed.")
 
-        # Step 2: Use 'edit' Model to Generate New Background behind subject
-        logger.info(f"Job {job_id}: Applying edit model for background [{new_bg_prompt}]...")
-        # edit_prompt = f"{new_bg_prompt}. The person is fully immersed in this environment. Global illumination, matching color grading, environmental light bleeding onto the subject, seamless shadows, highly realistic composite."     
+        # ---------------------------------------------------------
+        # STEP 2: Generate New Environment & Relight (Edit API)
+        # ---------------------------------------------------------
+        logger.info(f"Job {job_id} [Step 2]: Generating new background via Edit model...")
         
-        # We pass the prompt directly because the route has already injected 
-        # the blending/global illumination instructions.
-        edit_prompt = new_bg_prompt   
-        inputs = {
+        edit_inputs = {
             "image": transparent_img_url, 
-            "prompt": edit_prompt
+            "prompt": harmonized_prompt,
+            "resolution": resolution,
+            "generation_mode": generation_mode
         }
         
-        # If the user provided a real photo, pass it as the Image Context
+        # Pro-Tip: Inject the visual context if the user uploaded a reference image
         if reference_bg_url:
-            inputs["image_context"] = reference_bg_url
+            edit_inputs["image_context"] = reference_bg_url
 
         bg_gen_id = await trigger_generic_fashn_job(
             model_name="edit",  
-            inputs=inputs
+            inputs=edit_inputs
         )
-        final_output = None
+        
+        final_output_urls = None
         while True:
-            await asyncio.sleep(4)
+            await asyncio.sleep(5) # Edit takes longer, poll slightly slower
             status, output = await check_vton_status(bg_gen_id)
             if status == "completed":
-                # Ensure we store as a list for the JSON column
-                final_output = output if isinstance(output, list) else [output]
+                final_output_urls = output if isinstance(output, list) else [output]
                 break
             elif status == "failed":
-                raise Exception("Background generation edit step failed.")
+                raise Exception("FASHN 'edit' step failed.")
 
-        # Success - Save directly to JSON column
-        job.result_urls = final_output
+        # ---------------------------------------------------------
+        # SUCCESS: Save outputs and mark completed
+        # ---------------------------------------------------------
+        job.result_urls = final_output_urls
         job.status = models.JobStatus.COMPLETED
         db.commit()
-        logger.info(f"Job {job_id}: Background replacement chain completed successfully.")
+        logger.info(f"Job {job_id}: Advanced Background replacement completed successfully!")
 
     except Exception as e:
-        logger.error(f"Bg Change Error Job {job_id}: {str(e)}", exc_info=True)
+        logger.error(f"Background Change Chain Error on Job {job_id}: {str(e)}", exc_info=True)
         if 'job' in locals() and job:
             job.status = models.JobStatus.FAILED
             db.commit()
     finally:
         db.close()
-
-
-# @router.post("/change-background", response_model=StandardResponse)
-# async def change_background(
-#     background_tasks: BackgroundTasks,
-#     original_image: UploadFile = File(...),
-#     new_background_prompt: str = Form("In front of the Taj Mahal, cinematic lighting, 4k"),
-#     reference_bg_image: Optional[UploadFile] = File(None),
-#     db: Session = Depends(get_db),
-#     current_user: models.User = Depends(get_current_user)
-# ):
-#     orig_url = await process_upload(original_image)
-    
-#     # Process the reference image if the user uploaded one
-#     ref_bg_url = None
-#     if reference_bg_image:
-#         ref_bg_url = await process_upload(reference_bg_image)
-        
-#     # Save both URLs to the JSON column for tracking
-#     input_data = {"original_image": orig_url, "bg_prompt": new_background_prompt}
-#     if ref_bg_url:
-#         input_data["reference_bg_url"] = ref_bg_url
-
-#     db_job = models.StudioJob(
-#         user_id=current_user.id,
-#         job_type=models.StudioJobType.BACKGROUND_CHANGE,
-#         input_data=input_data
-#     )
-#     db.add(db_job); db.commit(); db.refresh(db_job)
-
-#     # Dispatch the chain with the new reference URL
-#     background_tasks.add_task(process_background_change_chain, db_job.id, orig_url, new_background_prompt, ref_bg_url)
-
-#     return StandardResponse(
-#         status=True, 
-#         msg="Background replacement chain queued successfully.", 
-#         data={"job_id": db_job.id, "status": db_job.status.value}
-#     )
     
     
+# ==============================================================================
+# API ENDPOINT: Request Background Change
+# ==============================================================================
 @router.post("/change-background", response_model=StandardResponse)
 async def change_background(
     background_tasks: BackgroundTasks,
-    original_image: UploadFile = File(...),
-    new_background_prompt: str = Form("In front of the Taj Mahal, cinematic lighting, 4k"),
-    reference_bg_image: Optional[UploadFile] = File(None),
+    original_image: UploadFile = File(...),                                      # Required: The original photo (e.g., person at Taj Mahal)
+    new_background_prompt: str = Form(...),                                      # Required: Description of new location (e.g., "The Great Wall of China")
+    reference_bg_image: Optional[UploadFile] = File(None),                       # Optional: Provide a specific photo of the Great Wall to use as context
+    resolution: str = Form("2k"),                                                # Default to 2k for better realism
+    generation_mode: str = Form("quality"),                                      # Pro-tip: Force 'quality' mode for best lighting/shadows
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
+    # 1. Save and resolve the original image
     orig_url = await process_upload(original_image)
     
-    # Process the reference image if the user uploaded one
+    # 2. Process the reference context image if the user uploaded one
     ref_bg_url = None
     if reference_bg_image:
         ref_bg_url = await process_upload(reference_bg_image)
         
-    # --- THE MAGIC FIX: Prompt Harmonization Injection ---
-    # We intercept the base prompt and force the diffusion model to blend the lighting natively.
+    # 3. --- PRO-TIP: PROMPT HARMONIZATION ---
+    # We intercept the user's basic prompt and inject professional lighting instructions.
+    # This prevents the "photoshopped" look by forcing the AI to bleed environmental light onto the subject.
     harmonized_prompt = (
         f"{new_background_prompt.strip()}. "
-        "The person is fully immersed in this environment. Global illumination, "
+        "The subject is fully immersed in this environment. Global illumination, "
         "matching color grading, environmental light bleeding onto the subject, "
-        "seamless shadows, highly realistic photographic composite."
+        "seamless shadows at the feet, highly realistic photographic composite."
     )
         
-    # Save both URLs and the newly formatted prompt to the JSON column for tracking
-    input_data = {"original_image": orig_url, "bg_prompt": harmonized_prompt}
+    # 4. Save tracking state to database
+    input_data = {
+        "original_image": orig_url, 
+        "user_prompt": new_background_prompt,
+        "harmonized_prompt": harmonized_prompt,
+        "resolution": resolution,
+        "generation_mode": generation_mode
+    }
     if ref_bg_url:
-        input_data["reference_bg_url"] = ref_bg_url
+        input_data["image_context"] = ref_bg_url
 
     db_job = models.StudioJob(
         user_id=current_user.id,
         job_type=models.StudioJobType.BACKGROUND_CHANGE,
         input_data=input_data
     )
-    db.add(db_job); db.commit(); db.refresh(db_job)
+    db.add(db_job)
+    db.commit()
+    db.refresh(db_job)
 
-    # Dispatch the chain with the NEW harmonized prompt
-    background_tasks.add_task(process_background_change_chain, db_job.id, orig_url, harmonized_prompt, ref_bg_url)
+    # 5. Dispatch the asynchronous background task chain
+    background_tasks.add_task(
+        process_advanced_background_chain, 
+        job_id=db_job.id, 
+        original_url=orig_url, 
+        harmonized_prompt=harmonized_prompt, 
+        reference_bg_url=ref_bg_url,
+        resolution=resolution,
+        generation_mode=generation_mode
+    )
 
     return StandardResponse(
         status=True, 
-        msg="Background replacement chain queued successfully.", 
+        msg="Advanced background replacement queued successfully. The AI is isolating the subject and rendering the new environment.", 
         data={"job_id": db_job.id, "status": db_job.status.value}
     )
-    
     
 # ==========================================
 # 5. MODEL CREATE (Generate AI Human from Text)
@@ -455,6 +467,77 @@ async def model_create(
     except Exception as e:
         db.rollback()
         raise APIException(status_code=500, msg=f"AI Engine failed: {str(e)}")
+    
+    
+# ==========================================
+# GET USER MODELS (Retrieve AI Human Generation History)
+# ==========================================
+@router.get("/my-models", response_model=StandardResponse)
+async def get_user_models(
+    skip: int = Query(0, ge=0, description="Number of records to skip for pagination"),
+    limit: int = Query(20, ge=1, le=100, description="Max number of records to return"),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    try:
+        # 1. Query the database for jobs matching the user and job type
+        base_query = db.query(models.StudioJob).filter(
+            models.StudioJob.user_id == current_user.id,
+            models.StudioJob.job_type == models.StudioJobType.MODEL_CREATE,
+            models.StudioJob.status == models.JobStatus.COMPLETED
+        )
+
+        # 2. Get the total count for frontend pagination logic
+        total_count = base_query.count()
+
+        # 3. Fetch the paginated records, ordering by newest first
+        # Note: If your StudioJob model has a 'created_at' column, use models.StudioJob.created_at.desc() instead
+        jobs = base_query.order_by(models.StudioJob.id.desc()).offset(skip).limit(limit).all()
+
+        # 4. Serialize the data to extract the generated image URLs
+        formatted_jobs = []
+        for job in jobs:
+            
+            # Extract prompt safely from input_data JSON column
+            prompt_text = ""
+            if job.input_data and isinstance(job.input_data, dict):
+                prompt_text = job.input_data.get("prompt", "")
+            
+            # Extract generated images directly from the result_urls column
+            generated_images = []
+            if job.result_urls:
+                # If your DB returns a string instead of a native list/JSON, use json.loads(job.result_urls)
+                generated_images = job.result_urls if isinstance(job.result_urls, list) else json.loads(job.result_urls)
+                
+            # Handle enum serialization for status
+            job_status = job.status.value if hasattr(job.status, 'value') else job.status
+
+            formatted_jobs.append({
+                "job_id": job.id,
+                "fashn_job_id": job.fashn_job_id,
+                "status": job_status,
+                "prompt": prompt_text,
+                "generated_image_urls": generated_images,  # Mapped directly to your DB column
+                "created_at": job.created_at,
+                "updated_at": job.updated_at
+            })
+
+        # 5. Format the response
+        return StandardResponse(
+            status=True,
+            msg="User models retrieved successfully.",
+            data={
+                "total": total_count,
+                "skip": skip,
+                "limit": limit,
+                "jobs": formatted_jobs
+            }
+        )
+        
+
+    except Exception as e:
+        # Catch and handle database or unexpected errors consistently
+        raise APIException(status_code=500, msg=f"Failed to fetch models: {str(e)}")
 
 # ==========================================
 # 6. UNIFIED STATUS POLLING ENDPOINT

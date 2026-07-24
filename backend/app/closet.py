@@ -47,7 +47,7 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 @router.post("/upload", response_model=StandardResponse)
 async def upload_closet_item(
-    category: str = Form(...),
+    category: str = Form("tops"),
     label: str = Form("My Garment"),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
@@ -60,6 +60,13 @@ async def upload_closet_item(
         logger.warning(f"Invalid file type uploaded by user {current_user.id}: {file.content_type}")
         raise APIException(status_code=400, msg="Invalid file format. Please upload an image.")
     
+    # --- VALIDATE CATEGORY ENUM ---
+    try:
+        # This ensures they only upload 'tops', 'bottoms', or 'one-pieces'
+        validated_category = models.GarmentCategory(category.lower())
+    except ValueError:
+        raise APIException(status_code=400, msg=f"Invalid category: {category}. Allowed values: tops, bottoms, one-pieces.")
+    
     try:
         # 1. Save file locally
         file_ext = file.filename.split(".")[-1]
@@ -69,11 +76,12 @@ async def upload_closet_item(
         with open(path, "wb") as buffer:
             buffer.write(await file.read())
         
-        # 2. Save to Database
+        # Save to Database with the validated category
         new_item = models.ClosetItem(
             user_id=current_user.id,
             file_path=path,
-            label=label
+            label=label,
+            category=validated_category.value  # <--- ADD .value HERE
         )
         db.add(new_item)
         db.commit()
@@ -81,13 +89,13 @@ async def upload_closet_item(
         
         logger.info(f"Closet item saved successfully for user {current_user.id} | Item ID: {new_item.id}")
         
-        # --- SUCCESS RESPONSE ---
         return StandardResponse(
             status=True,
             msg="Garment uploaded to closet successfully",
             data={
                 "closet_id": new_item.id,
-                "user_id": current_user.id
+                "user_id": current_user.id,
+                "category": new_item.category # Return the value confirming save
             }
         )
         
@@ -126,16 +134,18 @@ def get_closet_items(
             full_url = f"{base_url}{clean_path}"
             
             results.append({
-                "closet_id": item.id,
-                "label": item.label,
-                "image_url": full_url,
+                    "closet_id": item.id,
+                    "label": item.label,
+                    "image_url": full_url,
+                    
+                    # Make sure there is a comma at the very end of this line!
+                    "category": item.category if item.category else "tops", 
+                    
+                    "user_id": current_user.id,
+                    "username": current_user.username,
+                    "email": current_user.email
+                })
                 
-                # Appended user details as requested
-                "user_id": current_user.id,
-                "username": current_user.username,
-                "email": current_user.email
-            })
-            
         # --- SUCCESS RESPONSE ---
         return StandardResponse(
             status=True,
