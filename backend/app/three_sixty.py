@@ -17,8 +17,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/360", tags=["360 View Generator"])
 
-# Valid angles for validation
+# Valid positions for 360 view generation
 VALID_POSITIONS = ["front", "back", "side"]
+
 
 async def process_dynamic_generation_chain(
     job_id: int,
@@ -28,11 +29,13 @@ async def process_dynamic_generation_chain(
     garment_desc: Optional[str],
     resolution: str,
     output_format: str,
-    target_positions: List[str]  # NEW: Receives the specific angles to generate
+    target_positions: List[str]
 ):
     """
-    Background worker that dynamically dispatches FASHN try-on jobs for ONLY 
-    the requested positions in parallel.
+    Optimized Background Worker:
+    1. Triggers FASHN try-on jobs in parallel for requested angles.
+    2. Polls all active FASHN jobs concurrently for maximum efficiency.
+    3. Saves structured angle results to result_image_urls on models.TryOnJob.
     """
     db = SessionLocal()
     try:
@@ -44,7 +47,7 @@ async def process_dynamic_generation_chain(
         db_job.status = models.JobStatus.PROCESSING #[cite: 2]
         db.commit()
 
-        # 1. Prepare parallel trigger tasks only for the requested positions
+        # 1. Trigger jobs concurrently across target angles
         async def trigger_single_position(pos: str):
             angle_instruction = f"{pos} view"
             final_description = (
@@ -64,7 +67,6 @@ async def process_dynamic_generation_chain(
             )
             return pos, fashn_id
 
-        # Dispatch triggers concurrently for requested angles
         logger.info(f"[360 WORKER] Dispatching parallel FASHN jobs for Job {job_id} on angles: {target_positions}...")
         trigger_results = await asyncio.gather(
             *[trigger_single_position(pos) for pos in target_positions],
@@ -74,37 +76,45 @@ async def process_dynamic_generation_chain(
         position_fashn_ids: Dict[str, str] = {}
         for res in trigger_results:
             if isinstance(res, Exception):
-                logger.error(f"[360 WORKER] Failed to trigger one of the views: {res}")
+                logger.error(f"[360 WORKER] Failed to trigger one of the views for Job {job_id}: {res}")
                 db_job.status = models.JobStatus.FAILED #[cite: 2]
                 db.commit()
                 return
             pos, fashn_id = res
             position_fashn_ids[pos] = fashn_id
 
-        # Save FASHN IDs to database as JSON
+        # Save FASHN IDs as JSON dictionary string
         db_job.fashn_job_id = json.dumps(position_fashn_ids) #[cite: 2]
         db.commit()
 
-        # 2. Poll the triggered tasks until complete
+        # 2. Optimized Concurrent Status Polling Loop
         completed_results: Dict[str, str] = {}
         pending_positions = dict(position_fashn_ids)
 
-        max_polls = 60  # Timeout protection (~3 minutes total)
+        max_polls = 60  # ~3-minute timeout protection
         poll_count = 0
 
         while pending_positions and poll_count < max_polls:
             await asyncio.sleep(3)
             poll_count += 1
 
-            for pos, f_id in list(pending_positions.items()):
-                status, output = await check_vton_status(f_id) #[cite: 3]
+            # Check status of ALL pending jobs concurrently
+            positions_to_check = list(pending_positions.items())
+            check_tasks = [check_vton_status(f_id) for _, f_id in positions_to_check] #[cite: 3]
+            statuses = await asyncio.gather(*check_tasks, return_exceptions=True)
 
+            for (pos, f_id), res in zip(positions_to_check, statuses):
+                if isinstance(res, Exception):
+                    logger.warning(f"[360 WORKER] Temporary polling error on position {pos}: {str(res)}")
+                    continue
+
+                status, output = res
                 if status == "completed":
                     result_url = output[0] if isinstance(output, list) else output
                     completed_results[pos] = result_url
                     del pending_positions[pos]
                 elif status == "failed":
-                    logger.error(f"[360 WORKER] Position {pos} failed on FASHN side.")
+                    logger.error(f"[360 WORKER] Position '{pos}' failed on FASHN side for Job {job_id}.")
                     db_job.status = models.JobStatus.FAILED #[cite: 2]
                     db.commit()
                     return
@@ -115,11 +125,11 @@ async def process_dynamic_generation_chain(
             db.commit()
             return
 
-        # 3. Save structured JSON dictionary into result_image_urls
+        # 3. Store results and mark job COMPLETED
         db_job.result_image_urls = completed_results #[cite: 2]
         db_job.status = models.JobStatus.COMPLETED #[cite: 2]
         db.commit()
-        logger.info(f"[360 WORKER] Job {job_id} successfully generated views: {target_positions}")
+        logger.info(f"[360 WORKER] Job {job_id} successfully finished generating views: {target_positions}")
 
     except Exception as e:
         logger.error(f"[360 WORKER] Exception during background chain for job {job_id}: {str(e)}", exc_info=True)
@@ -134,7 +144,7 @@ async def process_dynamic_generation_chain(
 async def create_360_job(
     background_tasks: BackgroundTasks,
     category: models.GarmentCategory = Form(...), #[cite: 1]
-    positions: str = Form("front", description="Comma-separated angles, e.g. 'front,back,side'"), # NEW: Dynamic input
+    positions: str = Form("front", description="Comma-separated angles e.g. 'front,back,side'"),
     garment_desc: Optional[str] = Form(""), #[cite: 1]
     resolution: str = Form("1k"), #[cite: 1]
     output_format: str = Form("png"), #[cite: 1]
@@ -144,20 +154,19 @@ async def create_360_job(
     db: Session = Depends(get_db), #[cite: 1]
     current_user: models.User = Depends(get_current_user) #[cite: 1]
 ):
-    logger.info(f"User {current_user.id} requested generation for angles: {positions}")
+    logger.info(f"User {current_user.id} requested 360 generation for positions: {positions}")
     base_url = "https://vton-backend.falcondetectives.com" #[cite: 1]
 
-    # --- NEW: Parse and Validate Target Positions ---
-    # Convert comma-separated string to a clean list: "front, back" -> ["front", "back"]
+    # Parse and deduplicate requested positions
     parsed_positions = [p.strip().lower() for p in positions.split(",") if p.strip()]
-    
-    # Filter only valid angles
-    target_positions = [p for p in parsed_positions if p in VALID_POSITIONS]
-    
-    # Fallback to "front" if nothing valid was passed
+    target_positions = []
+    for p in parsed_positions:
+        if p in VALID_POSITIONS and p not in target_positions:
+            target_positions.append(p)
+
+    # Fallback to "front" if no valid positions were given
     if not target_positions:
         target_positions = ["front"]
-    # ------------------------------------------------
 
     # 1. File Type Validation
     if not person_image.content_type.startswith("image/"): #[cite: 1]
@@ -166,7 +175,7 @@ async def create_360_job(
         raise APIException(status_code=400, msg="Invalid garment_image format. Must be an image file.") #[cite: 1]
 
     try:
-        # 2. Resolve Garment Resource (Closet ID vs Raw Upload)
+        # 2. Resolve Garment Source (Closet vs Raw Upload)
         if closet_item_id: #[cite: 1]
             item = db.query(models.ClosetItem).filter(
                 models.ClosetItem.id == closet_item_id, #[cite: 1]
@@ -190,7 +199,7 @@ async def create_360_job(
         person_filename = save_upload_file(person_image) #[cite: 1]
         person_url = f"{base_url}/static_uploads/{person_filename}" #[cite: 1]
 
-        # 4. Create Initial Database Entry
+        # 4. Create Database Entry on TryOnJob table
         db_job = models.TryOnJob(
             user_id=current_user.id, #[cite: 2]
             category=category, #[cite: 2]
@@ -202,7 +211,7 @@ async def create_360_job(
         db.commit() #[cite: 1]
         db.refresh(db_job) #[cite: 1]
 
-        # 5. Dispatch Async Background Task for the SPECIFIC angles
+        # 5. Dispatch Async Background Task
         background_tasks.add_task(
             process_dynamic_generation_chain,
             job_id=db_job.id,
@@ -212,22 +221,25 @@ async def create_360_job(
             garment_desc=garment_desc,
             resolution=resolution,
             output_format=output_format,
-            target_positions=target_positions # Passed cleanly to the worker
+            target_positions=target_positions
         )
 
-        # 6. Immediate Response Cycle
         return StandardResponse(
             status=True,
-            msg=f"View generation initiated for angles: {', '.join(target_positions)}.",
-            data={"job_id": db_job.id, "status": db_job.status.value, "requested_angles": target_positions}
+            msg=f"360 generation initiated for positions: {', '.join(target_positions)}.",
+            data={
+                "job_id": db_job.id,
+                "status": db_job.status.value,
+                "requested_angles": target_positions
+            }
         )
 
     except APIException:
         raise
     except Exception as e:
         db.rollback() #[cite: 1]
-        logger.error(f"Generation registration crash: {str(e)}", exc_info=True) #[cite: 1]
-        raise APIException(status_code=500, msg="Failed to register AI task pipeline.") #[cite: 1]
+        logger.error(f"360 generation registration crash: {str(e)}", exc_info=True) #[cite: 1]
+        raise APIException(status_code=500, msg="Failed to register 360 AI task pipeline.") #[cite: 1]
 
 
 @router.get("/status/{job_id}", response_model=StandardResponse) #[cite: 1]
@@ -236,7 +248,7 @@ async def get_360_job_status(
     db: Session = Depends(get_db), #[cite: 1]
     current_user: models.User = Depends(get_current_user) #[cite: 1]
 ):
-    logger.info(f"User {current_user.id} checking Job ID: {job_id}") #[cite: 1]
+    logger.info(f"User {current_user.id} checking 360 Job ID: {job_id}") #[cite: 1]
     try:
         db_job = db.query(models.TryOnJob).filter(
             models.TryOnJob.id == job_id, #[cite: 1]
@@ -244,7 +256,7 @@ async def get_360_job_status(
         ).first() #[cite: 1]
 
         if not db_job: #[cite: 1]
-            raise APIException(status_code=404, msg="Requested generation task profile not found.") #[cite: 1]
+            raise APIException(status_code=404, msg="Requested 360 generation task profile not found.") #[cite: 1]
 
         return StandardResponse(
             status=True, #[cite: 1]
@@ -252,14 +264,12 @@ async def get_360_job_status(
             data={
                 "id": db_job.id, #[cite: 1]
                 "status": db_job.status.value, #[cite: 1]
-                # Result dict dynamically scales based on requested angles 
-                # e.g. {"front": "url"} OR {"front": "url", "back": "url", "side": "url"}
-                "result_image_urls": db_job.result_image_urls #[cite: 2] 
+                "result_image_urls": db_job.result_image_urls #[cite: 2]
             }
         )
 
     except APIException:
         raise
     except Exception as e:
-        logger.error(f"Error reading status: {str(e)}", exc_info=True) #[cite: 1]
+        logger.error(f"Error reading 360 status: {str(e)}", exc_info=True) #[cite: 1]
         raise APIException(status_code=500, msg="Internal server exception reading pipeline profile indicators.") #[cite: 1]

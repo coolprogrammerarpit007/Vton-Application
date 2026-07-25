@@ -329,8 +329,8 @@ def read_root():
 @app.post("/api/tryon", response_model=StandardResponse, tags=["VTON Try-On API"])
 async def create_tryon_job(
     category: models.GarmentCategory = Form(...),
-    closet_item_id: Optional[int] = Form(None),             # Option A: Pull from DB (Strict Validation)
-    garment_image: Optional[UploadFile] = File(None),       # Option B: Raw Upload (Bypasses Validation)
+    closet_item_id: Optional[int] = Form(None),             # Option A: Pull from DB
+    garment_image: Optional[UploadFile] = File(None),       # Option B: Raw Upload
     system_model_id: Optional[int] = Form(None),            # Option A: Pre-loaded System Model
     person_image: Optional[UploadFile] = File(None),        # Option B: Manual Custom Canvas Upload
     garment_desc: Optional[str] = Form(""), 
@@ -344,9 +344,7 @@ async def create_tryon_job(
     base_url = "https://vton-backend.falcondetectives.com"
     
     try:
-        # 1. Resolve Garment Source & Extract Demographic Info if Available
-        closet_demographic = None
-        
+        # 1. Resolve Garment Source
         if closet_item_id:
             logger.info(f"Resolving closet_item_id: {closet_item_id} for User {current_user.id}")
             closet_item = db.query(models.ClosetItem).filter(
@@ -357,8 +355,6 @@ async def create_tryon_job(
             if not closet_item:
                 raise APIException(status_code=404, msg="Selected closet garment not found.")
                 
-            closet_demographic = closet_item.demographic
-            
             path_part = closet_item.file_path.replace("\\", "/") 
             if not path_part.startswith("/"):
                 path_part = "/" + path_part
@@ -376,7 +372,7 @@ async def create_tryon_job(
         else:
             raise APIException(status_code=400, msg="Workspace requires either a closet_item_id or a garment_image upload.")
 
-        # 2. Resolve Model Persona and Implement Demographic Isolation Guardrails
+        # 2. Resolve Model Persona Canvas
         if system_model_id:
             logger.info(f"Resolving system_model_id: {system_model_id}")
             sys_model = db.query(models.SystemModel).filter(
@@ -386,15 +382,6 @@ async def create_tryon_job(
             
             if not sys_model:
                 raise APIException(status_code=404, msg="Selected system model variant not found.")
-                
-            # --- DEMOGRAPHIC ISOLATION GUARDRAIL ---
-            # Only blocks if the garment came from the closet AND the tags mismatch
-            if closet_demographic and sys_model.demographic != closet_demographic:
-                logger.warning(f"Demographic conflict: Model ({sys_model.demographic.value}) vs Garment ({closet_demographic.value})")
-                raise APIException(
-                    status_code=400, 
-                    msg=f"Demographic Isolation Conflict: Cannot apply a '{closet_demographic.value}' garment onto a '{sys_model.demographic.value}' profile layout."
-                )
                 
             person_url = sys_model.base_image_url
             
@@ -424,7 +411,7 @@ async def create_tryon_job(
         db.refresh(db_job)
 
         # 4. Trigger FASHN API
-        logger.info(f"Dispatching Job ID {db_job.id} to FASHN API Engine...")
+        logger.info(f"Dispatching Job ID {db_job.id} to FASHN API Engine (Resolution: {resolution}, Samples: {num_images})...")
         fashn_job_id = await trigger_vton_job(
             model_image_url=person_url, 
             garment_image_url=garment_url, 
@@ -459,7 +446,6 @@ async def create_tryon_job(
         db.rollback()
         logger.error(f"CRITICAL FAILURE during try-on job creation for User {current_user.id}: {str(e)}", exc_info=True)
         raise APIException(status_code=500, msg="Failed to initiate AI core. Please try again.")
-
 
 @app.get("/api/tryon/{job_id}", response_model=StandardResponse,tags=["VTON Try-On API"])
 async def get_tryon_status(
@@ -531,8 +517,7 @@ async def get_tryon_status(
     
     
     
-    
-@app.get("/api/universal-status/{module_type}/{job_id}", response_model=StandardResponse,tags=["VTON Try-On API"])
+@app.get("/api/universal-status/{module_type}/{job_id}", response_model=StandardResponse, tags=["VTON Try-On API"])
 async def universal_status_check(
     module_type: MasterModuleType,
     job_id: int, 
@@ -540,30 +525,33 @@ async def universal_status_check(
     current_user: models.User = Depends(get_current_user)
 ):
     """
-    Master Status API routing specifically for Try-On, 360, and Outfit features.
+    Master Status API routed specifically for Try-On, 360, and Outfit features.
+    
+    - TRYON: Queries TryOnJob table, polls FASHN directly if processing.
+    - THREE_SIXTY: Queries TryOnJob table, background worker manages polling.
+    - OUTFIT: Queries OutfitJob table, background worker manages polling (returns result_image_url).
     """
     logger.info(f"Universal Poll: User {current_user.id} checking {module_type.value} Job {job_id}")
 
     try:
         # ==========================================
-        # ROUTE 1 & 2: TRY-ON & 360 GENERATION
-        # Both utilize the TryOnJob table
+        # ROUTE 1: SINGLE TRY-ON (models.TryOnJob)
         # ==========================================
-        if module_type in [MasterModuleType.TRYON, MasterModuleType.THREE_SIXTY]:
+        if module_type == MasterModuleType.TRYON:
             db_job = db.query(models.TryOnJob).filter(
                 models.TryOnJob.id == job_id, 
                 models.TryOnJob.user_id == current_user.id
             ).first()
             
             if not db_job: 
-                raise APIException(status_code=404, msg=f"{module_type.value.title()} job not found.")
+                raise APIException(status_code=404, msg="Try-On job not found.")
             
+            # Poll FASHN directly if still processing
             if db_job.status == models.JobStatus.PROCESSING and db_job.fashn_job_id:
                 fashn_status, output = await check_vton_status(db_job.fashn_job_id)
                 
                 if fashn_status == "completed":
                     db_job.status = models.JobStatus.COMPLETED
-                    # Save to the JSON column safely
                     db_job.result_image_urls = output if isinstance(output, list) else [output]
                     db.commit()
                 elif fashn_status == "failed":
@@ -582,7 +570,31 @@ async def universal_status_check(
             )
 
         # ==========================================
-        # ROUTE 3: OUTFIT BUILDER (Background Chained)
+        # ROUTE 2: 360 GENERATION (models.TryOnJob)
+        # ==========================================
+        elif module_type == MasterModuleType.THREE_SIXTY:
+            db_job = db.query(models.TryOnJob).filter(
+                models.TryOnJob.id == job_id, 
+                models.TryOnJob.user_id == current_user.id
+            ).first()
+            
+            if not db_job: 
+                raise APIException(status_code=404, msg="360 view job not found.")
+
+            # Background task updates local DB record; return state safely
+            return StandardResponse(
+                status=True, 
+                msg="Status retrieved", 
+                data={
+                    "id": db_job.id, 
+                    "module": module_type.value, 
+                    "status": db_job.status.value, 
+                    "result_image_urls": db_job.result_image_urls
+                }
+            )
+
+        # ==========================================
+        # ROUTE 3: OUTFIT BUILDER (models.OutfitJob)
         # ==========================================
         elif module_type == MasterModuleType.OUTFIT:
             db_job = db.query(models.OutfitJob).filter(
@@ -592,9 +604,8 @@ async def universal_status_check(
             
             if not db_job: 
                 raise APIException(status_code=404, msg="Outfit job not found.")
-            
-            # Outfit jobs poll internally via the background worker, 
-            # so we ONLY safely return the local database state here.
+
+            # Background task updates local DB record; return singular result_image_url
             return StandardResponse(
                 status=True, 
                 msg="Status retrieved", 
@@ -611,3 +622,60 @@ async def universal_status_check(
     except Exception as e:
         logger.error(f"Universal Polling Error: {str(e)}", exc_info=True)
         raise APIException(status_code=500, msg="Internal tracking error.")
+    
+    
+    
+@app.get("/api/universal-configs", response_model=StandardResponse, tags=["System Configurations"])
+async def get_universal_configurations():
+    """
+    Universal API to fetch configuration options for media generation parameters.
+    Currently serves static data. Designed to be replaced with a DB query in the future.
+    """
+    try:
+        # ==========================================
+        # TODO: FUTURE DATABASE INTEGRATION
+        # ==========================================
+        # config_record = db.query(models.MediaConfigs).first()
+        # if config_record:
+        #     return StandardResponse(status=True, msg="Success", data=config_record.to_dict())
+        
+        # 1. Define Static Fallback Data
+        static_data = {
+            "image_resolutions": [
+                {"label": "Standard (1K)", "value": "1k"},
+                {"label": "High Definition (2K)", "value": "2k"},
+                {"label": "Ultra HD (4K)", "value": "4k"}
+            ],
+            "video_qualities": [
+                {"label": "SD (480p)", "value": "480"},
+                {"label": "HD (720p)", "value": "720"},
+                {"label": "FHD (1080p)", "value": "1080"}
+            ],
+            "aspect_ratios": [
+                {"label": "Cinematic (21:9)", "value": "21:9"},
+                {"label": "Square (1:1)", "value": "1:1"},
+                {"label": "Classic Landscape (3:2)", "value": "3:2"},
+                {"label": "Standard Landscape (4:3)", "value": "4:3"},
+                {"label": "Large Landscape (5:4)", "value": "5:4"},
+                {"label": "Social Portrait (4:5)", "value": "4:5"},
+                {"label": "Standard Portrait (3:4)", "value": "3:4"},
+                {"label": "Classic Portrait (2:3)", "value": "2:3"},
+                {"label": "Widescreen (16:9)", "value": "16:9"},
+                {"label": "Mobile/Reels (9:16)", "value": "9:16"}
+            ],
+            "video-durations":[
+                {"label":"5s","value":5},
+                {"label":"10s","value":10},
+            ]
+        }
+        
+        # 2. Return Payload
+        return StandardResponse(
+            status=True,
+            msg="Universal media configurations retrieved successfully.",
+            data=static_data
+        )
+
+    except Exception as e:
+        logger.error(f"Error fetching universal configurations: {str(e)}", exc_info=True)
+        raise APIException(status_code=500, msg="Failed to load system configurations.")

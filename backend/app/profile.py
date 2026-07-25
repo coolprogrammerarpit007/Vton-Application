@@ -60,25 +60,43 @@ async def get_user_profile(
         total_images = 0
         total_videos = 0
 
-        # Count Try-On images
+        # --- SAFELY COUNT TRY-ON & 360 IMAGES ---
         for j in tryon_jobs:
-            if j.result_image_urls:
-                urls = j.result_image_urls if isinstance(j.result_image_urls, list) else json.loads(j.result_image_urls)
-                total_images += len(urls) if urls else 1
+            raw_urls = j.result_image_urls
+            
+            # Catch raw string payloads
+            if isinstance(raw_urls, str):
+                try: raw_urls = json.loads(raw_urls)
+                except Exception: raw_urls = []
+                
+            # Count based on data structure
+            if isinstance(raw_urls, dict):
+                total_images += len(raw_urls)
+            elif isinstance(raw_urls, list):
+                total_images += len(raw_urls)
             else:
                 total_images += 1
 
         # Count Outfit images
         total_images += len(outfit_jobs)
 
-        # Count Studio images vs videos
+        # --- SAFELY COUNT STUDIO IMAGES VS VIDEOS ---
         for j in studio_jobs:
             if j.job_type == models.StudioJobType.IMAGE_TO_VIDEO:
                 total_videos += 1
             else:
-                if j.result_urls:
-                    urls = j.result_urls if isinstance(j.result_urls, list) else json.loads(j.result_urls)
-                    total_images += len(urls) if urls else 1
+                raw_urls = j.result_urls
+                
+                # Catch raw string payloads
+                if isinstance(raw_urls, str):
+                    try: raw_urls = json.loads(raw_urls)
+                    except Exception: raw_urls = []
+                    
+                # Count based on data structure
+                if isinstance(raw_urls, dict):
+                    total_images += len(raw_urls)
+                elif isinstance(raw_urls, list):
+                    total_images += len(raw_urls)
                 else:
                     total_images += 1
 
