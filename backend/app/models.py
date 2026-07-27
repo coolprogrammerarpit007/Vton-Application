@@ -1,11 +1,81 @@
-from sqlalchemy import Column, Integer, String, Enum, ForeignKey, DateTime, Boolean, func,JSON  
+from sqlalchemy import Column, Integer, String,Boolean,Text, Enum, ForeignKey, DateTime, Boolean, func,JSON  
 from app.database import Base
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 import enum
 from datetime import datetime
 
+class Platform(Base):
+    __tablename__ = "platforms"
 
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(50), nullable=False)
+    slug = Column(String(50), unique=True, nullable=False)
+    is_active = Column(Boolean, default=True)
+
+    # New timestamp columns
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now(), nullable=False)
+
+    aspect_ratios = relationship(
+        "AspectRatio", back_populates="platform", cascade="all, delete-orphan"
+    )
+    
+    
+class AspectRatio(Base):
+    __tablename__ = "aspect_ratios"
+
+    id = Column(Integer, primary_key=True, index=True)
+    platform_id = Column(Integer, ForeignKey("platforms.id"), nullable=False)
+    ratio = Column(String(10), nullable=False)
+    default_width = Column(Integer, nullable=False)
+    default_height = Column(Integer, nullable=False)
+    is_default = Column(Boolean, default=False)
+    
+    # New timestamp columns
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now(), nullable=False)
+
+    platform = relationship("Platform", back_populates="aspect_ratios")
+    
+    
+class GarmentSegment(Base):
+    __tablename__ = "garment_segments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    segment_name = Column(String(50), nullable=False)
+    categories = Column(JSON, nullable=False)
+    
+    # New timestamp columns
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now(), nullable=False)
+    
+class ModelPersona(Base):
+    __tablename__ = "model_personas"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), nullable=False)
+    age = Column(Integer, nullable=False)
+    gender = Column(String(20), nullable=False)
+    preview_image_url = Column(String(255), nullable=False)
+    attributes_json = Column(JSON, nullable=False)
+    master_prompt = Column(Text, nullable=False)  # Kept internal only
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now()),
+    updated_at = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now(), nullable=False)
+    
+    
+class GenerationControl(Base):
+    __tablename__ = "generation_controls"
+
+    id = Column(Integer, primary_key=True, index=True)
+    config_key = Column(String(50), unique=True, nullable=False)
+    config_value = Column(JSON, nullable=False)
+    description = Column(String(255), nullable=True)
+    
+    # New timestamp columns
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now(), nullable=False)
 
 
     
@@ -50,6 +120,20 @@ class User(Base):
     # Relationship to track all try-on requests made by this user
     jobs = relationship("TryOnJob", back_populates="user")
 
+
+
+class TryonPromptPreset(Base):
+    __tablename__ = "tryon_prompt_presets"
+
+    id = Column(Integer, primary_key=True, index=True)
+    category = Column(String(50), nullable=False)
+    prompt_text = Column(Text, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+    
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now(), nullable=False)
+    
+    
 class TryOnJob(Base):
     __tablename__ = "tryon_jobs"
 
@@ -71,6 +155,12 @@ class TryOnJob(Base):
     user = relationship("User", back_populates="jobs")
     
     
+# Add this near your other Enums in models.py
+class WearCategory(str, enum.Enum):
+    MENS = "mens"
+    WOMEN = "women"
+    KIDS = "kids"
+    
 # models.py
 class ClosetItem(Base):
     __tablename__ = "closet_items"
@@ -80,10 +170,11 @@ class ClosetItem(Base):
     file_path = Column(String(255), nullable=False)   
     label = Column(String(100), default="Untitled Garment")
     
-    
     category = Column(String(50), default=GarmentCategory.TOPS.value, nullable=False)
     
-    # demographic = Column(Enum(TargetDemographic), default=TargetDemographic.WOMAN, nullable=False)
+    # NEW REQUIRED FIELD (Added a default to prevent crashes with existing DB rows)
+    wear_category = Column(Enum(WearCategory), default=WearCategory.MENS, nullable=False) 
+    
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
 # Dedicated System Model Catalog Table
@@ -179,5 +270,6 @@ class StudioJob(Base):
     
     input_data = Column(JSON, default={})
     result_urls = Column(JSON, nullable=True)
+    is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

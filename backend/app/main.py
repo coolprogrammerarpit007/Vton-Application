@@ -24,6 +24,7 @@ from .studio import router as studio_router
 from .three_sixty import router as three_sixty_router
 from .dashboard import router as dashboard_router
 from .profile import router as profile_router
+from .dynamic_config import router as config_router
 # from .image_utils import router as image_utils_router
 
 from .fashn_service import trigger_vton_job, check_vton_status
@@ -92,6 +93,7 @@ app.include_router(three_sixty_router)
 app.include_router(studio_router)
 app.include_router(dashboard_router)
 app.include_router(profile_router)
+app.include_router(config_router)
 # MOUNT SMART CROPPING ROUTER HERE:
 # app.include_router(image_utils_router)
 app.mount("/static_uploads", StaticFiles(directory="static_uploads"), name="static_uploads")
@@ -142,7 +144,7 @@ async def custom_api_exception_handler(request: Request, exc: APIException):
     return JSONResponse(
         status_code=exc.status_code, # Injects the exact status code from the route
         content={
-            "status": False,
+            "status": True,
             "msg": exc.msg,
             "data": exc.data
         }
@@ -197,7 +199,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     return JSONResponse(
         status_code=422,
         content={
-            "status": False,
+            "status": True,
             "msg": error_msg,
             "data": errors # Keep the raw error array in data for frontend debugging
         }
@@ -329,10 +331,18 @@ def read_root():
 @app.post("/api/tryon", response_model=StandardResponse, tags=["VTON Try-On API"])
 async def create_tryon_job(
     category: models.GarmentCategory = Form(...),
-    closet_item_id: Optional[int] = Form(None),             # Option A: Pull from DB
-    garment_image: Optional[UploadFile] = File(None),       # Option B: Raw Upload
-    system_model_id: Optional[int] = Form(None),            # Option A: Pre-loaded System Model
-    person_image: Optional[UploadFile] = File(None),        # Option B: Manual Custom Canvas Upload
+    
+    # --- GARMENT SOURCES ---
+    closet_item_id: Optional[int] = Form(None),             
+    garment_image: Optional[UploadFile] = File(None), 
+    
+    # --- PERSON/CANVAS SOURCES ---
+    system_model_id: Optional[int] = Form(None),            
+    model_persona_id: Optional[int] = Form(None),           
+    generated_model_job_id: Optional[int] = Form(None),     
+    person_image: Optional[UploadFile] = File(None),
+           
+    # --- CONFIGURATIONS ---
     garment_desc: Optional[str] = Form(""), 
     resolution: str = Form("1k"),
     output_format: str = Form("png"),
@@ -340,11 +350,15 @@ async def create_tryon_job(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
+    
     logger.info(f"--- NEW TRY-ON REQUEST --- User ID: {current_user.id} | Category: {category.value}")
     base_url = "https://vton-backend.falcondetectives.com"
     
     try:
+       # ==========================================
         # 1. Resolve Garment Source
+        # ==========================================
+        
         if closet_item_id:
             logger.info(f"Resolving closet_item_id: {closet_item_id} for User {current_user.id}")
             closet_item = db.query(models.ClosetItem).filter(
@@ -372,7 +386,11 @@ async def create_tryon_job(
         else:
             raise APIException(status_code=400, msg="Workspace requires either a closet_item_id or a garment_image upload.")
 
-        # 2. Resolve Model Persona Canvas
+        
+        # ==========================================
+        # 2. Resolve Person Canvas Source
+        # ==========================================
+        
         if system_model_id:
             logger.info(f"Resolving system_model_id: {system_model_id}")
             sys_model = db.query(models.SystemModel).filter(
@@ -385,6 +403,23 @@ async def create_tryon_job(
                 
             person_url = sys_model.base_image_url
             
+            
+        elif model_persona_id:
+            logger.info(f"Resolving Admin Model Persona ID: {model_persona_id}")
+            persona = db.query(models.ModelPersona).filter(
+                models.ModelPersona.id == model_persona_id,
+                models.ModelPersona.is_active == True
+            ).first()
+            
+            if not persona:
+                raise APIException(status_code=404, msg="Selected Model Persona not found or inactive.")
+            
+            # Format the URL properly if it's a relative path
+            preview = persona.preview_image_url.replace("\\", "/")
+            if not preview.startswith("http"):
+                preview = f"{base_url}/{preview.lstrip('/')}"
+            person_url = preview
+            
         elif person_image:
             logger.debug(f"Validating custom person_image: {person_image.filename}")
             if not person_image.content_type.startswith("image/"):
@@ -393,6 +428,25 @@ async def create_tryon_job(
             logger.info("Saving uploaded custom person image...")
             person_filename = save_upload_file(person_image)
             person_url = f"{base_url}/static_uploads/{person_filename}"
+            
+            
+        elif generated_model_job_id:
+            logger.info(f"Resolving User's Generated AI Model from StudioJob ID: {generated_model_job_id}")
+            studio_job = db.query(models.StudioJob).filter(
+                models.StudioJob.id == generated_model_job_id,
+                models.StudioJob.user_id == current_user.id,
+                models.StudioJob.job_type == models.StudioJobType.MODEL_CREATE,
+                models.StudioJob.status == models.JobStatus.COMPLETED
+            ).first()
+            
+            if not studio_job or not studio_job.result_urls:
+                raise APIException(status_code=404, msg="Generated model not found or job has not completed yet.")
+                
+            urls = studio_job.result_urls if isinstance(studio_job.result_urls, list) else json.loads(studio_job.result_urls)
+            if not urls:
+                raise APIException(status_code=404, msg="No images found in the generated model.")
+            
+            person_url = urls[0]  # Extracts the first image from the generation output
             
         else:
             raise APIException(status_code=400, msg="Workspace requires either a system_model_id or a person_image asset.")

@@ -1,8 +1,9 @@
+import json
 import logging
 import asyncio
-from fastapi import APIRouter, Depends, Form, File, UploadFile, BackgroundTasks,Query
+from typing import Optional                           
 from sqlalchemy.orm import Session
-from typing import Optional
+from fastapi import APIRouter, Depends, Form, File, UploadFile, BackgroundTasks,Query
 
 from . import models
 from .database import get_db, SessionLocal
@@ -12,7 +13,6 @@ from .fashn_service import trigger_generic_fashn_job, check_vton_status
 from .schemas import StandardResponse
 from .exceptions import APIException
 
-import json
 
 
 
@@ -404,46 +404,118 @@ async def change_background(
 # ==========================================
 @router.post("/model-create", response_model=StandardResponse)
 async def model_create(
-    prompt: str = Form(...),                                               # Required: Text description of the model
-    image_reference: Optional[UploadFile] = File(None),                    # Optional: Composition/pose inspiration
-    face_reference: Optional[UploadFile] = File(None),                     # Optional: Face identity lock
-    face_reference_mode: str = Form("match_reference"),                    # 'match_base' or 'match_reference'
-    aspect_ratio: Optional[str] = Form(None),                              # '1:1', '9:16', '16:9', etc.
-    resolution: str = Form("1k"),                                          # '1k', '2k', or '4k'
-    generation_mode: Optional[str] = Form(None),                           # 'fast', 'balanced', or 'quality'
-    num_images: int = Form(1),                                             # 1 to 4
-    output_format: str = Form("png"),                                      # 'png' or 'jpeg'
+    # --- DYNAMIC PROMPT ATTRIBUTES (From Frontend UI) ---
+    age: Optional[str] = Form("25"),
+    gender: Optional[str] = Form("Female"),
+    ethnicity: Optional[str] = Form("Caucasian"),
+    build_type: Optional[str] = Form("Slim"),
+    
+    hair_length: Optional[str] = Form("N/A"),
+    hair_color: Optional[str] = Form("Dark brown"),
+    hair_type: Optional[str] = Form("Wavy"),
+    hair_style: Optional[str] = Form("Long flowing"),
+    
+    eye_color: Optional[str] = Form("Deep brown"),
+    face_shape: Optional[str] = Form("Oval"),
+    jawline: Optional[str] = Form("Soft"),
+    eyebrow: Optional[str] = Form("Arched"),
+    face_expression: Optional[str] = Form("Calm"),
+    skin_color: Optional[str] = Form("Fair"),
+    
+    # --- STANDARD PARAMS ---
+    custom_prompt: Optional[str] = Form(None),                               # Fallback for manual override
+    image_reference: Optional[UploadFile] = File(None),                      # Optional: Composition/pose inspiration
+    face_reference: Optional[UploadFile] = File(None),                       # Optional: Face identity lock
+    face_reference_mode: str = Form("match_reference"),                      # 'match_base' or 'match_reference'
+    aspect_ratio: Optional[str] = Form(None),                                # '1:1', '9:16', '16:9', etc.
+    resolution: str = Form("1k"),                                            # '1k', '2k', or '4k'
+    generation_mode: Optional[str] = Form(None),                             # 'fast', 'balanced', or 'quality'
+    num_images: int = Form(1),                                               # 1 to 4
+    output_format: str = Form("png"),                                        # 'png' or 'jpeg'
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    # 1. Base Payload with Required Parameters
-    input_data = {
-        "prompt": prompt,
+    
+    # 1. Synthesize the Master Prompt Dynamically
+    if custom_prompt and custom_prompt.strip():
+        final_prompt = custom_prompt.strip()
+    
+    else:
+        # Build the prompt strictly from the provided UI attributes
+        final_prompt = (
+            f"A highly detailed, professional studio portrait of a {age}-year-old {ethnicity} {gender}, "
+            f"with a {build_type} body build. "
+            f"The model has {skin_color} skin, an {face_shape} face shape, a {jawline} jawline, "
+            f"and {eyebrow} eyebrows. Their eyes are {eye_color}, showing a {face_expression} expression. "
+            f"Hair details: {hair_length}, {hair_color}, {hair_type} texture, styled as {hair_style}. "
+            f"Fashion photography, {resolution}, photorealistic, cinematic lighting."
+        )
+        
+    # Payload strictly for FASHN API
+    fashn_input_data = {
+        "prompt": final_prompt,
+        "resolution": resolution,
+        "num_images": num_images,
+        "output_format": output_format
+    }
+    
+    
+   # Payload for your local database (includes UI attributes)
+    db_input_data = {
+        "prompt": final_prompt,
+        "attributes": {
+            "age": age,
+            "gender": gender,
+            "ethnicity": ethnicity,
+            "build_type": build_type,
+            "hair": {
+                "length": hair_length,
+                "color": hair_color,
+                "type": hair_type,
+                "style": hair_style
+            },
+            "face": {
+                "eye_color": eye_color,
+                "face_shape": face_shape,
+                "jawline": jawline,
+                "eyebrow": eyebrow,
+                "face_expression": face_expression,
+                "skin_color": skin_color
+            }
+        },
         "resolution": resolution,
         "num_images": num_images,
         "output_format": output_format
     }
 
-    # 2. Process Optional Uploads and dynamically build payload
+    # 3. Process Optional Uploads
     if image_reference:
-        input_data["image_reference"] = await process_upload(image_reference)
+        img_ref_url = await process_upload(image_reference)
+        fashn_input_data["image_reference"] = img_ref_url
+        db_input_data["image_reference"] = img_ref_url
         
     if face_reference:
-        input_data["face_reference"] = await process_upload(face_reference)
-        # Only inject the mode if a face was actually provided
-        input_data["face_reference_mode"] = face_reference_mode
+        face_ref_url = await process_upload(face_reference)
+        fashn_input_data["face_reference"] = face_ref_url
+        db_input_data["face_reference"] = face_ref_url
+        
+        fashn_input_data["face_reference_mode"] = face_reference_mode
+        db_input_data["face_reference_mode"] = face_reference_mode
 
-    # 3. Append Optional Form Data
+    # 4. Append Optional Form Data
     if aspect_ratio:
-        input_data["aspect_ratio"] = aspect_ratio
+        fashn_input_data["aspect_ratio"] = aspect_ratio
+        db_input_data["aspect_ratio"] = aspect_ratio
     if generation_mode:
-        input_data["generation_mode"] = generation_mode
-
-    # 4. Save tracking state to DB
+        fashn_input_data["generation_mode"] = generation_mode
+        db_input_data["generation_mode"] = generation_mode
+    
+   # 5. Save tracking state to DB
     db_job = models.StudioJob(
         user_id=current_user.id,
         job_type=models.StudioJobType.MODEL_CREATE,
-        input_data=input_data  # Preserves all uploaded URLs and parameters
+        input_data=db_input_data, # <--- Use the DB dictionary here
+        is_active=True
     )
     db.add(db_job)
     db.commit()
@@ -453,7 +525,7 @@ async def model_create(
         # 5. Trigger FASHN AI Engine
         fashn_id = await trigger_generic_fashn_job(
             model_name="model-create",
-            inputs=input_data
+            inputs=fashn_input_data
         )
         db_job.fashn_job_id = fashn_id
         db_job.status = models.JobStatus.PROCESSING
@@ -484,7 +556,8 @@ async def get_user_models(
         base_query = db.query(models.StudioJob).filter(
             models.StudioJob.user_id == current_user.id,
             models.StudioJob.job_type == models.StudioJobType.MODEL_CREATE,
-            models.StudioJob.status == models.JobStatus.COMPLETED
+            models.StudioJob.status == models.JobStatus.COMPLETED,
+            models.StudioJob.is_active == True
         )
 
         # 2. Get the total count for frontend pagination logic
@@ -563,8 +636,10 @@ async def get_studio_job_status(
 
             if fashn_status == "completed":
                 db_job.status = models.JobStatus.COMPLETED
-                db_job.result_urls = output_data if isinstance(output_data, list) else [output_data]
+                urls = output_data if isinstance(output_data, list) else [output_data]
+                db_job.result_urls = urls
                 db.commit()
+                
             elif fashn_status == "failed":
                 db_job.status = models.JobStatus.FAILED
                 db.commit()
@@ -576,8 +651,8 @@ async def get_studio_job_status(
             data={
                 "id": db_job.id,
                 "user_id": db_job.user_id,
-                "job_type": db_job.job_type.value,  # Unpack Enum
-                "status": db_job.status.value,      # Unpack Enum
+                "job_type": db_job.job_type.value if hasattr(db_job.job_type, 'value') else db_job.job_type,
+                "status": db_job.status.value if hasattr(db_job.status, 'value') else db_job.status,
                 "fashn_job_id": db_job.fashn_job_id,
                 "input_data": db_job.input_data,
                 "result_urls": db_job.result_urls,
