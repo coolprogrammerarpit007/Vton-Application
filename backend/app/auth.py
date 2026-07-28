@@ -1,20 +1,30 @@
-import os
-import logging
-from logging.handlers import TimedRotatingFileHandler
+import secrets
+import random
+import smtplib
+from email.message import EmailMessage
 from fastapi import APIRouter, Depends, status
-from fastapi.security import OAuth2PasswordBearer
+from pydantic import EmailStr
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
-from passlib.context import CryptContext
-from jose import JWTError, jwt
-from dotenv import load_dotenv
-from app.exceptions import APIException
-
 
 # Import your database models and session dependency
 from . import models
-from .schemas import UserCreate,UserLogin,StandardResponse,Token
+from .schemas import (
+    UserCreate, UserLogin, StandardResponse,
+    ForgotPasswordRequest, VerifyOTPRequest, ResetPasswordRequest
+)
 from .database import get_db
+from app.exceptions import APIException
+
+import os
+from dotenv import load_dotenv
+import logging
+from logging.handlers import TimedRotatingFileHandler
+from fastapi.security import OAuth2PasswordBearer
+from passlib.context import CryptContext
+from jose import JWTError, jwt
+
+
 
 # --- Logging Configuration (Daily Rotating) ---
 # 1. Ensure a 'logs' directory exists on your server
@@ -129,47 +139,6 @@ def get_me(current_user: models.User = Depends(get_current_user)):
     )
     
     
-# @router.post("/login", response_model=StandardResponse)
-# def login_user(user: UserLogin, db: Session = Depends(get_db)):
-#     logger.info(f"Login attempt for email: {user.email}")
-    
-#     try:
-#         # 1. Fetch user from database
-#         db_user = db.query(models.User).filter(models.User.email == user.email).first()
-        
-#         # 2. Check if user exists
-#         if not db_user:
-#             logger.warning(f"Login failed: No account found for email {user.email}")
-#             raise APIException(status_code=401, msg="Invalid credentials")
-        
-#         # 3. Check password
-#         if not verify_password(user.password, db_user.hashed_password):
-#             logger.warning(f"Login failed: Incorrect password for email {user.email}")
-#             raise APIException(status_code=401, msg="Invalid credentials")
-        
-#         # 4. Success State
-#         logger.info(f"User logged in successfully: {db_user.username} (ID: {db_user.id})")
-#         access_token = create_access_token(data={"sub": str(db_user.id)})
-        
-#         return StandardResponse(
-#             status=True,
-#             msg="User logged in successfully",
-#             data={
-#                 "access_token": access_token, 
-#                 "token_type": "bearer"
-#             }
-#         )
-        
-        
-#     except APIException:
-#         #THIS: Let our custom exceptions pass through untouched
-#         raise
-        
-    
-#     except Exception as e:
-#         # Catch severe server errors (e.g., MySQL database goes offline)
-#         logger.error(f"Critical error during login for {user.email}: {str(e)}")
-#         raise APIException(status_code=500, msg="Internal server error. Please try again later.")
 
 
 @router.post("/login", response_model=StandardResponse)
@@ -283,3 +252,214 @@ def logout_user(current_user: models.User = Depends(get_current_user)):
         # Catch unexpected server errors (e.g., if your logger fails or a DB connection drops)
         logger.error(f"Critical error during logout for user {current_user.id}: {str(e)}")
         raise APIException(status_code=500, msg="Internal server error during logout.")
+    
+    
+    
+    
+    
+    
+    
+# *************************************  API development for the forgot password ****************
+
+# Helper function for OTP and Email
+
+def generate_otp() -> str:
+    """Generates a secure 6-digit numeric OTP."""
+    return f"{random.randint(100000, 999999)}"
+
+
+def send_otp_email(to_email: str, otp: str):
+    """
+    Sends the OTP via SMTP. Configure these ENV variables in your .env file:
+    SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, MAIL_FROM
+    """
+    smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
+    smtp_port = int(os.getenv("SMTP_PORT", 587))
+    smtp_user = os.getenv("SMTP_USER")
+    smtp_password = os.getenv("SMTP_PASSWORD")
+    mail_from = os.getenv("MAIL_FROM", smtp_user)
+
+    # If SMTP is not configured in development, log the OTP for testing
+    if not smtp_user or not smtp_password:
+        logger.warning(f"[DEV MODE] SMTP credentials missing. Generated OTP for {to_email}: {otp}")
+        return
+
+    msg = EmailMessage()
+    msg["Subject"] = "Password Reset Request - Your OTP Code"
+    msg["From"] = mail_from
+    msg["To"] = to_email
+    msg.set_content(
+        f"Hello,\n\n"
+        f"Your One-Time Password (OTP) to reset your password is: {otp}\n\n"
+        f"This code will expire in 10 minutes. If you did not request this, please ignore this email.\n\n"
+        f"Regards,\nSecurity Team"
+    )
+
+    try:
+        with smtplib.SMTP(smtp_host, smtp_port) as server:
+            server.starttls()
+            server.login(smtp_user, smtp_password)
+            server.send_message(msg)
+        logger.info(f"Password reset OTP successfully sent to {to_email}")
+    except Exception as e:
+        logger.error(f"Failed to send email to {to_email}: {str(e)}")
+        raise APIException(status_code=500, msg="Failed to send OTP email. Please try again later.")
+    
+    
+    
+# ==========================================
+# 1. FORGOT PASSWORD API
+# ==========================================
+@router.post("/forgot-password", response_model=StandardResponse)
+def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db)):
+    logger.info(f"Password reset requested for email: {payload.email}")
+
+    # 1. Verify user exists
+    user = db.query(models.User).filter(models.User.email == payload.email).first()
+    if not user:
+        logger.warning(f"Forgot password attempt for non-existent email: {payload.email}")
+        raise APIException(status_code=200, msg="No account found with this email address.")
+
+    try:
+        # 2. Invalidate any existing unused OTPs for this user
+        db.query(models.PasswordResetOTP).filter(
+            models.PasswordResetOTP.user_id == user.id,
+            models.PasswordResetOTP.is_used == False
+        ).update({"is_used": True})
+
+        # 3. Generate new OTP (Expires in 10 Minutes)
+        otp_code = generate_otp()
+        expiry_time = datetime.utcnow() + timedelta(minutes=10)
+
+        otp_record = models.PasswordResetOTP(
+            user_id=user.id,
+            otp=otp_code,
+            expires_at=expiry_time,
+            is_used=False
+        )
+        db.add(otp_record)
+        db.commit()
+
+        # 4. Dispatch Email
+        send_otp_email(to_email=user.email, otp=otp_code)
+
+        return StandardResponse(
+            status=True,
+            msg="OTP code sent successfully to your registered email address.",
+            data={"email": user.email}
+        )
+
+    except APIException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error during forgot password for {payload.email}: {str(e)}")
+        raise APIException(status_code=500, msg="Internal server error generating reset token.")
+    
+    
+    
+# ==========================================
+# 2. VERIFY OTP API
+# ==========================================
+@router.post("/verify-otp", response_model=StandardResponse)
+def verify_otp(payload: VerifyOTPRequest, db: Session = Depends(get_db)):
+    logger.info(f"Verifying password reset OTP for email: {payload.email}")
+
+    user = db.query(models.User).filter(models.User.email == payload.email).first()
+    if not user:
+        raise APIException(status_code=404, msg="User not found.")
+
+    # Fetch latest active OTP record
+    otp_record = db.query(models.PasswordResetOTP).filter(
+        models.PasswordResetOTP.user_id == user.id,
+        models.PasswordResetOTP.otp == payload.otp,
+        models.PasswordResetOTP.is_used == False
+    ).order_by(models.PasswordResetOTP.created_at.desc()).first()
+
+    if not otp_record:
+        logger.warning(f"OTP verification failed for {payload.email}: Invalid code")
+        raise APIException(status_code=400, msg="Invalid OTP code.")
+
+    if datetime.utcnow() > otp_record.expires_at:
+        logger.warning(f"OTP verification failed for {payload.email}: Code expired")
+        raise APIException(status_code=400, msg="OTP code has expired. Please request a new one.")
+
+    try:
+        # Generate a secure single-use reset token for step 3
+        reset_token = secrets.token_urlsafe(32)
+        
+        # Mark OTP as verified and store reset_token
+        otp_record.is_used = True
+        otp_record.reset_token = reset_token
+        db.commit()
+
+        logger.info(f"OTP successfully verified for user ID {user.id}")
+
+        return StandardResponse(
+            status=True,
+            msg="OTP verified successfully. You may now reset your password.",
+            data={
+                "email": user.email,
+                "reset_token": reset_token
+            }
+        )
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error verifying OTP for {payload.email}: {str(e)}")
+        raise APIException(status_code=500, msg="Internal server error verifying OTP.")
+    
+    
+    
+# ==========================================
+# 3. RESET PASSWORD API
+# ==========================================
+@router.post("/reset-password", response_model=StandardResponse)
+def reset_password(payload: ResetPasswordRequest, db: Session = Depends(get_db)):
+    logger.info(f"Resetting password for email: {payload.email}")
+
+    user = db.query(models.User).filter(models.User.email == payload.email).first()
+    if not user:
+        raise APIException(status_code=404, msg="User not found.")
+
+    # Validate reset token
+    token_record = db.query(models.PasswordResetOTP).filter(
+        models.PasswordResetOTP.user_id == user.id,
+        models.PasswordResetOTP.reset_token == payload.reset_token,
+        models.PasswordResetOTP.is_used == True
+    ).first()
+
+    if not token_record:
+        logger.warning(f"Reset password failed for {payload.email}: Invalid or reused reset token")
+        raise APIException(status_code=400, msg="Invalid or expired reset token.")
+
+    # Enforce 15-minute validity window for password reset after verification
+    if datetime.utcnow() > token_record.expires_at + timedelta(minutes=15):
+        raise APIException(status_code=400, msg="Reset session expired. Please restart the process.")
+
+    try:
+        # Tech Logic Validation: Bcrypt 72-byte limit
+        if len(payload.new_password.encode("utf-8")) > 72:
+            raise APIException(status_code=400, msg="Password is too long (max 72 characters)")
+
+        # Hash new password & update
+        user.hashed_password = get_password_hash(payload.new_password)
+        
+        # Invalidate reset token so it cannot be used again
+        token_record.reset_token = None
+        db.commit()
+
+        logger.info(f"Password successfully updated for user ID: {user.id}")
+
+        return StandardResponse(
+            status=True,
+            msg="Password updated successfully! You can now log in with your new password.",
+            data=None
+        )
+
+    except APIException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error resetting password for {payload.email}: {str(e)}")
+        raise APIException(status_code=500, msg="Internal server error resetting password.")

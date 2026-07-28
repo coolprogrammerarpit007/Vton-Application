@@ -105,7 +105,8 @@ origins = [
     "http://localhost:5500", # Keep this for local testing
     "http://127.0.0.1:5500",
     "http://localhost:5173",
-    "http://192.168.1.8:5173"
+    "http://192.168.1.8:5173",
+    "https://vton.microcrm.in"
 ]
 
 app.add_middleware(
@@ -142,9 +143,10 @@ async def custom_api_exception_handler(request: Request, exc: APIException):
     logger.warning(f"Controlled API Error [{exc.status_code}]: {exc.msg}")
     
     return JSONResponse(
-        status_code=exc.status_code, # Injects the exact status code from the route
+        # status_code=exc.status_code, # Injects the exact status code from the route
+        status_code=200,
         content={
-            "status": True,
+            "status": False,
             "msg": exc.msg,
             "data": exc.data
         }
@@ -197,9 +199,9 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     logger.warning(f"Pydantic Validation Error: {error_msg}")
     
     return JSONResponse(
-        status_code=422,
+        status_code=200,
         content={
-            "status": True,
+            "status": False,
             "msg": error_msg,
             "data": errors # Keep the raw error array in data for frontend debugging
         }
@@ -626,6 +628,31 @@ async def universal_status_check(
         # ==========================================
         # ROUTE 2: 360 GENERATION (models.TryOnJob)
         # ==========================================
+        # elif module_type == MasterModuleType.THREE_SIXTY:
+        #     db_job = db.query(models.TryOnJob).filter(
+        #         models.TryOnJob.id == job_id, 
+        #         models.TryOnJob.user_id == current_user.id
+        #     ).first()
+            
+        #     if not db_job: 
+        #         raise APIException(status_code=404, msg="360 view job not found.")
+
+        #     # Background task updates local DB record; return state safely
+        #     return StandardResponse(
+        #         status=True, 
+        #         msg="Status retrieved", 
+        #         data={
+        #             "id": db_job.id, 
+        #             "module": module_type.value, 
+        #             "status": db_job.status.value, 
+        #             "result_image_urls": db_job.result_image_urls
+        #         }
+        #     )
+        
+        
+        # ==========================================
+        # ROUTE 2: 360 GENERATION (models.TryOnJob)
+        # ==========================================
         elif module_type == MasterModuleType.THREE_SIXTY:
             db_job = db.query(models.TryOnJob).filter(
                 models.TryOnJob.id == job_id, 
@@ -635,7 +662,23 @@ async def universal_status_check(
             if not db_job: 
                 raise APIException(status_code=404, msg="360 view job not found.")
 
-            # Background task updates local DB record; return state safely
+            # Convert result_image_urls dictionary to a clean list of URLs
+            formatted_urls = []
+            if db_job.result_image_urls:
+                raw_urls = db_job.result_image_urls
+                
+                if isinstance(raw_urls, str):
+                    try:
+                        raw_urls = json.loads(raw_urls)
+                    except Exception:
+                        raw_urls = [raw_urls]
+
+                if isinstance(raw_urls, dict):
+                    formatted_urls = list(raw_urls.values())
+                elif isinstance(raw_urls, list):
+                    formatted_urls = raw_urls
+
+            # Background task updates local DB record; return state safely with list format
             return StandardResponse(
                 status=True, 
                 msg="Status retrieved", 
@@ -643,7 +686,7 @@ async def universal_status_check(
                     "id": db_job.id, 
                     "module": module_type.value, 
                     "status": db_job.status.value, 
-                    "result_image_urls": db_job.result_image_urls
+                    "result_image_urls": formatted_urls
                 }
             )
 

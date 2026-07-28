@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import json
+
 from fastapi import APIRouter, Depends, Form, File, UploadFile, BackgroundTasks
 from sqlalchemy.orm import Session
 from typing import Optional
@@ -11,6 +13,7 @@ from .utils import save_upload_file
 from .fashn_service import trigger_vton_job, check_vton_status
 from .schemas import StandardResponse
 from .exceptions import APIException
+
 
 logger = logging.getLogger(__name__)
 
@@ -72,9 +75,7 @@ async def process_outfit_chain(
             fashn_category = "tops"
             if garment.layer_category == models.OutfitLayer.BOTTOM:
                 fashn_category = "bottoms"
-            elif garment.layer_category == models.OutfitLayer.TOP:
-                fashn_category = "tops"
-            elif garment.layer_category == models.OutfitLayer.OUTERWEAR:
+            elif garment.layer_category in (models.OutfitLayer.TOP, models.OutfitLayer.OUTERWEAR):
                 fashn_category = "tops"
 
             # Inject contextual prompts based on garment type
@@ -132,36 +133,80 @@ async def process_outfit_chain(
 @router.post("/generate", response_model=StandardResponse)
 async def create_outfit_job(
     background_tasks: BackgroundTasks,
-    person_image: UploadFile = File(...),
+    
+    # Person Canvas Params
+    person_image: Optional[UploadFile] = File(None),
+    generated_model_job_id: Optional[int] = Form(None),
+    
+    # Closet Garments Params
     top_closet_id: Optional[int] = Form(None),
     bottom_closet_id: Optional[int] = Form(None),
     outerwear_closet_id: Optional[int] = Form(None),
+    
     outfit_desc: Optional[str] = Form(""),
-    resolution: str = Form("1k"),          # Retained Resolution control
-    output_format: str = Form("png"),      # Retained Format control
+    resolution: str = Form("1k"),
+    output_format: str = Form("png"),
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
     logger.info(f"Multi-garment composition requested by User ID: {current_user.id}")
     base_url = "https://vton-backend.falcondetectives.com"
 
-    # Enforce precise image type assertions
-    if not person_image.content_type.startswith("image/"):
-        raise APIException(status_code=400, msg="Invalid person_image format. Please upload a standard image.")
 
-    # Guard clause against empty submissions
+   # ==========================================
+    # 1. Guard Clause: Check Garment Selection
+    # ==========================================
     if not any([top_closet_id, bottom_closet_id, outerwear_closet_id]):
         raise APIException(status_code=400, msg="Outfit creation requires at least one closet garment layer selection.")
-
-    # Process human core model template asset
-    try:
+    
+    
+    # ==========================================
+    # 2. Resolve Person Canvas Source
+    # ==========================================
+    person_url: Optional[str] = None
+    
+    if generated_model_job_id:
+        logger.info(f"Resolving User's Generated AI Model from StudioJob ID: {generated_model_job_id}")
+        studio_job = db.query(models.StudioJob).filter(
+            models.StudioJob.id == generated_model_job_id,
+            models.StudioJob.user_id == current_user.id,
+            models.StudioJob.job_type == models.StudioJobType.MODEL_CREATE,
+            models.StudioJob.status == models.JobStatus.COMPLETED,
+            models.StudioJob.is_active == True
+        ).first()
+        
+        if not studio_job or not studio_job.result_urls:
+            raise APIException(status_code=404, msg="Generated model not found or job has not completed yet.")
+            
+        urls = studio_job.result_urls if isinstance(studio_job.result_urls, list) else json.loads(studio_job.result_urls)
+        if not urls:
+            raise APIException(status_code=404, msg="No images found in the generated model.")
+            
+        person_url = urls[0]
+            
+            
+    elif person_image:
+        logger.debug(f"Validating custom person_image: {person_image.filename}")
+        if not person_image.content_type.startswith("image/"):
+            raise APIException(status_code=400, msg="Invalid person_image format. Must be an image.")
+            
+        logger.info("Saving uploaded custom person image...")
         person_filename = save_upload_file(person_image)
         person_url = f"{base_url}/static_uploads/{person_filename}"
-    except Exception:
-        logger.error("Failed to persist uploaded model file", exc_info=True)
-        raise APIException(status_code=500, msg="Failed to securely persist template target canvas.")
+        
+        
+    # Guard clause: Ensure canvas source was provided
+    if not person_url:
+        raise APIException(
+            status_code=400, 
+            msg="Must provide either a person_image upload or a valid generated_model_job_id."
+        )
 
-    # Track structural tracking entity entry
+    
+
+   # ==========================================
+    # 3. Create Tracking Database Entry
+    # ==========================================
     db_job = models.OutfitJob(
         user_id=current_user.id,
         person_image_url=person_url,
@@ -172,7 +217,9 @@ async def create_outfit_job(
     db.commit()
     db.refresh(db_job)
 
-    # Relational assignment mapper
+    # ==========================================
+    # 4. Bind Relational Garment Mapping
+    # ==========================================
     def attach_layer_relationship(closet_id: Optional[int], layer_type: models.OutfitLayer):
         if not closet_id:
             return
@@ -207,8 +254,10 @@ async def create_outfit_job(
         db.rollback()
         logger.error(f"Relational binding error on outfit mapping: {str(e)}")
         raise APIException(status_code=500, msg="Failed to bind relational metadata mapping arrays.")
-
-    # Fire sequence engine off main thread thread pool
+    
+    # ==========================================
+    # 5. Dispatch Async Background Task
+    # ==========================================
     background_tasks.add_task(
         process_outfit_chain, 
         db_job.id, 

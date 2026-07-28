@@ -17,45 +17,40 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/360", tags=["360 View Generator"])
 
-# Valid positions for 360 view generation
-VALID_POSITIONS = ["front", "back", "side"]
-
-
 async def process_dynamic_generation_chain(
     job_id: int,
-    person_url: str,
+    person_urls: Dict[str, str],  # Example: {"front": "url1", "back": "url2"}
     garment_url: str,
     category: models.GarmentCategory,
     garment_desc: Optional[str],
     resolution: str,
-    output_format: str,
-    target_positions: List[str]
+    output_format: str
 ):
     """
-    Optimized Background Worker:
-    1. Triggers FASHN try-on jobs in parallel for requested angles.
-    2. Polls all active FASHN jobs concurrently for maximum efficiency.
-    3. Saves structured angle results to result_image_urls on models.TryOnJob.
+    Maximum Efficiency Worker:
+    1. Triggers all provided uploaded angles to FASHN API simultaneously.
+    2. Polls all active FASHN jobs in parallel.
+    3. Saves the final URLs back to the database.
     """
     db = SessionLocal()
     try:
-        db_job = db.query(models.TryOnJob).filter(models.TryOnJob.id == job_id).first() #[cite: 2]
+        db_job = db.query(models.TryOnJob).filter(models.TryOnJob.id == job_id).first()
         if not db_job:
-            logger.error(f"[360 WORKER] Job {job_id} not found in database.")
+            logger.error(f"[360 WORKER] Job {job_id} not found.")
             return
 
-        db_job.status = models.JobStatus.PROCESSING #[cite: 2]
+        db_job.status = models.JobStatus.PROCESSING
         db.commit()
 
-        # 1. Trigger jobs concurrently across target angles
-        async def trigger_single_position(pos: str):
+        # 1. Dispatch parallel requests to FASHN
+        async def trigger_single_position(pos: str, person_url: str):
             angle_instruction = f"{pos} view"
             final_description = (
                 f"{angle_instruction}, {garment_desc.strip()}"
                 if garment_desc and garment_desc.strip()
                 else angle_instruction
             )
-            
+
             fashn_id = await trigger_vton_job(
                 model_image_url=person_url,
                 garment_image_url=garment_url,
@@ -63,49 +58,44 @@ async def process_dynamic_generation_chain(
                 garment_desc=final_description,
                 resolution=resolution,
                 output_format=output_format,
-                num_images=1 #[cite: 1]
+                num_images=1
             )
             return pos, fashn_id
 
-        logger.info(f"[360 WORKER] Dispatching parallel FASHN jobs for Job {job_id} on angles: {target_positions}...")
+        # Fire all triggers at the exact same time
         trigger_results = await asyncio.gather(
-            *[trigger_single_position(pos) for pos in target_positions],
+            *[trigger_single_position(pos, url) for pos, url in person_urls.items()],
             return_exceptions=True
         )
 
         position_fashn_ids: Dict[str, str] = {}
         for res in trigger_results:
             if isinstance(res, Exception):
-                logger.error(f"[360 WORKER] Failed to trigger one of the views for Job {job_id}: {res}")
-                db_job.status = models.JobStatus.FAILED #[cite: 2]
+                logger.error(f"[360 WORKER] Failed to trigger view for Job {job_id}: {res}")
+                db_job.status = models.JobStatus.FAILED
                 db.commit()
                 return
             pos, fashn_id = res
             position_fashn_ids[pos] = fashn_id
 
-        # Save FASHN IDs as JSON dictionary string
-        db_job.fashn_job_id = json.dumps(position_fashn_ids) #[cite: 2]
+        db_job.fashn_job_id = json.dumps(position_fashn_ids)
         db.commit()
 
-        # 2. Optimized Concurrent Status Polling Loop
+        # 2. Polling loop (Checking all FASHN jobs simultaneously)
         completed_results: Dict[str, str] = {}
         pending_positions = dict(position_fashn_ids)
-
-        max_polls = 60  # ~3-minute timeout protection
-        poll_count = 0
+        max_polls, poll_count = 60, 0
 
         while pending_positions and poll_count < max_polls:
             await asyncio.sleep(3)
             poll_count += 1
 
-            # Check status of ALL pending jobs concurrently
             positions_to_check = list(pending_positions.items())
-            check_tasks = [check_vton_status(f_id) for _, f_id in positions_to_check] #[cite: 3]
+            check_tasks = [check_vton_status(f_id) for _, f_id in positions_to_check]
             statuses = await asyncio.gather(*check_tasks, return_exceptions=True)
 
             for (pos, f_id), res in zip(positions_to_check, statuses):
                 if isinstance(res, Exception):
-                    logger.warning(f"[360 WORKER] Temporary polling error on position {pos}: {str(res)}")
                     continue
 
                 status, output = res
@@ -114,162 +104,139 @@ async def process_dynamic_generation_chain(
                     completed_results[pos] = result_url
                     del pending_positions[pos]
                 elif status == "failed":
-                    logger.error(f"[360 WORKER] Position '{pos}' failed on FASHN side for Job {job_id}.")
-                    db_job.status = models.JobStatus.FAILED #[cite: 2]
+                    logger.error(f"[360 WORKER] {pos} failed on FASHN side.")
+                    db_job.status = models.JobStatus.FAILED
                     db.commit()
                     return
 
         if pending_positions:
-            logger.error(f"[360 WORKER] Polling timed out for Job {job_id}.")
-            db_job.status = models.JobStatus.FAILED #[cite: 2]
+            db_job.status = models.JobStatus.FAILED
             db.commit()
             return
 
-        # 3. Store results and mark job COMPLETED
-        db_job.result_image_urls = completed_results #[cite: 2]
-        db_job.status = models.JobStatus.COMPLETED #[cite: 2]
+        # 3. Finalize
+        db_job.result_image_urls = completed_results
+        db_job.status = models.JobStatus.COMPLETED
         db.commit()
-        logger.info(f"[360 WORKER] Job {job_id} successfully finished generating views: {target_positions}")
+        logger.info(f"[360 WORKER] Job {job_id} successfully completed for angles: {list(completed_results.keys())}")
 
     except Exception as e:
-        logger.error(f"[360 WORKER] Exception during background chain for job {job_id}: {str(e)}", exc_info=True)
+        logger.error(f"[360 WORKER] Crash: {str(e)}", exc_info=True)
         if 'db_job' in locals() and db_job:
-            db_job.status = models.JobStatus.FAILED #[cite: 2]
+            db_job.status = models.JobStatus.FAILED
             db.commit()
     finally:
         db.close()
-
-
-@router.post("/generate", response_model=StandardResponse) #[cite: 1]
+        
+        
+        
+        
+        
+@router.post("/generate", response_model=StandardResponse)
 async def create_360_job(
     background_tasks: BackgroundTasks,
-    category: models.GarmentCategory = Form(...), #[cite: 1]
-    positions: str = Form("front", description="Comma-separated angles e.g. 'front,back,side'"),
-    garment_desc: Optional[str] = Form(""), #[cite: 1]
-    resolution: str = Form("1k"), #[cite: 1]
-    output_format: str = Form("png"), #[cite: 1]
-    person_image: UploadFile = File(...), #[cite: 1]
-    garment_image: Optional[UploadFile] = File(None), #[cite: 1]
-    closet_item_id: Optional[int] = Form(None), #[cite: 1]
-    db: Session = Depends(get_db), #[cite: 1]
-    current_user: models.User = Depends(get_current_user) #[cite: 1]
+    category: models.GarmentCategory = Form(...),
+    garment_desc: Optional[str] = Form(""),
+    resolution: str = Form("1k"),
+    output_format: str = Form("png"),
+
+    ## --- GARMENT SOURCES (Upload OR Closet) ---
+    garment_image: Optional[UploadFile] = File(None),
+    closet_item_id: Optional[int] = Form(None),
+
+    # OPTIONAL: Person Images per angle
+    person_image_front: Optional[UploadFile] = File(None),
+    person_image_back: Optional[UploadFile] = File(None),
+    person_image_side: Optional[UploadFile] = File(None),
+
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
 ):
-    logger.info(f"User {current_user.id} requested 360 generation for positions: {positions}")
-    base_url = "https://vton-backend.falcondetectives.com" #[cite: 1]
-
-    # Parse and deduplicate requested positions
-    parsed_positions = [p.strip().lower() for p in positions.split(",") if p.strip()]
-    target_positions = []
-    for p in parsed_positions:
-        if p in VALID_POSITIONS and p not in target_positions:
-            target_positions.append(p)
-
-    # Fallback to "front" if no valid positions were given
-    if not target_positions:
-        target_positions = ["front"]
-
-    # 1. File Type Validation
-    if not person_image.content_type.startswith("image/"): #[cite: 1]
-        raise APIException(status_code=400, msg="Invalid person_image format. Must be an image file.") #[cite: 1]
-    if garment_image and not garment_image.content_type.startswith("image/"): #[cite: 1]
-        raise APIException(status_code=400, msg="Invalid garment_image format. Must be an image file.") #[cite: 1]
+    base_url = "https://vton-backend.falcondetectives.com"
 
     try:
-        # 2. Resolve Garment Source (Closet vs Raw Upload)
-        if closet_item_id: #[cite: 1]
+        # 1. Resolve Garment Source (Closet vs Raw Upload)
+        if closet_item_id:
             item = db.query(models.ClosetItem).filter(
-                models.ClosetItem.id == closet_item_id, #[cite: 1]
-                models.ClosetItem.user_id == current_user.id #[cite: 1]
-            ).first() #[cite: 1]
-            if not item: #[cite: 1]
-                raise APIException(status_code=404, msg="Selected closet garment not found or unauthorized.") #[cite: 1]
+                models.ClosetItem.id == closet_item_id,
+                models.ClosetItem.user_id == current_user.id
+            ).first()
+            if not item:
+                raise APIException(status_code=404, msg="Selected closet garment not found or unauthorized.")
 
-            path_part = item.file_path.replace("\\", "/") #[cite: 1]
-            if not path_part.startswith("/"): #[cite: 1]
-                path_part = "/" + path_part #[cite: 1]
-            garment_url = f"{base_url}{path_part}" #[cite: 1]
+            path_part = item.file_path.replace("\\", "/")
+            if not path_part.startswith("/"):
+                path_part = "/" + path_part
+            garment_url = f"{base_url}{path_part}"
 
-        elif garment_image: #[cite: 1]
-            garment_filename = save_upload_file(garment_image) #[cite: 1]
-            garment_url = f"{base_url}/static_uploads/{garment_filename}" #[cite: 1]
-        else: #[cite: 1]
-            raise APIException(status_code=400, msg="Must provide either a garment_image or a valid closet_item_id.") #[cite: 1]
+        elif garment_image:
+            if not garment_image.content_type.startswith("image/"):
+                raise APIException(status_code=400, msg="Invalid garment_image format. Must be an image file.")
+            garment_filename = save_upload_file(garment_image)
+            garment_url = f"{base_url}/static_uploads/{garment_filename}"
+            
+        else:
+            raise APIException(status_code=400, msg="Must provide either a garment_image upload or a valid closet_item_id.")
 
-        # 3. Save Model Image Canvas
-        person_filename = save_upload_file(person_image) #[cite: 1]
-        person_url = f"{base_url}/static_uploads/{person_filename}" #[cite: 1]
 
-        # 4. Create Database Entry on TryOnJob table
+        # 2. Process whichever person angles were uploaded
+        person_urls: Dict[str, str] = {}
+        
+        angle_uploads = {
+            "front": person_image_front,
+            "back": person_image_back,
+            "side": person_image_side
+        }
+
+        for pos, file_obj in angle_uploads.items():
+            if file_obj:
+                if not file_obj.content_type.startswith("image/"):
+                    raise APIException(status_code=400, msg=f"Invalid file for person_image_{pos}.")
+                
+                filename = save_upload_file(file_obj)
+                person_urls[pos] = f"{base_url}/static_uploads/{filename}"
+
+        # Ensure the user uploaded at least one person image
+        if not person_urls:
+            raise APIException(status_code=400, msg="You must upload at least one person image (front, back, or side).")
+
+        # 3. Create tracking database entry
         db_job = models.TryOnJob(
-            user_id=current_user.id, #[cite: 2]
-            category=category, #[cite: 2]
-            user_image_url=person_url, #[cite: 2]
-            garment_image_url=garment_url, #[cite: 2]
-            status=models.JobStatus.PENDING #[cite: 2]
+            user_id=current_user.id,
+            category=category,
+            user_image_url=list(person_urls.values())[0], # Just saving the first one for DB reference
+            garment_image_url=garment_url,
+            status=models.JobStatus.PENDING
         )
-        db.add(db_job) #[cite: 1]
-        db.commit() #[cite: 1]
-        db.refresh(db_job) #[cite: 1]
+        db.add(db_job)
+        db.commit()
+        db.refresh(db_job)
 
-        # 5. Dispatch Async Background Task
+        # 4. Dispatch Async Background Task
         background_tasks.add_task(
             process_dynamic_generation_chain,
             job_id=db_job.id,
-            person_url=person_url,
+            person_urls=person_urls,
             garment_url=garment_url,
             category=category,
             garment_desc=garment_desc,
             resolution=resolution,
-            output_format=output_format,
-            target_positions=target_positions
+            output_format=output_format
         )
 
         return StandardResponse(
             status=True,
-            msg=f"360 generation initiated for positions: {', '.join(target_positions)}.",
+            msg=f"360 generation initiated for angles: {list(person_urls.keys())}.",
             data={
                 "job_id": db_job.id,
                 "status": db_job.status.value,
-                "requested_angles": target_positions
+                "requested_angles": list(person_urls.keys())
             }
         )
 
     except APIException:
         raise
     except Exception as e:
-        db.rollback() #[cite: 1]
-        logger.error(f"360 generation registration crash: {str(e)}", exc_info=True) #[cite: 1]
-        raise APIException(status_code=500, msg="Failed to register 360 AI task pipeline.") #[cite: 1]
-
-
-@router.get("/status/{job_id}", response_model=StandardResponse) #[cite: 1]
-async def get_360_job_status(
-    job_id: int, #[cite: 1]
-    db: Session = Depends(get_db), #[cite: 1]
-    current_user: models.User = Depends(get_current_user) #[cite: 1]
-):
-    logger.info(f"User {current_user.id} checking 360 Job ID: {job_id}") #[cite: 1]
-    try:
-        db_job = db.query(models.TryOnJob).filter(
-            models.TryOnJob.id == job_id, #[cite: 1]
-            models.TryOnJob.user_id == current_user.id #[cite: 1]
-        ).first() #[cite: 1]
-
-        if not db_job: #[cite: 1]
-            raise APIException(status_code=404, msg="Requested 360 generation task profile not found.") #[cite: 1]
-
-        return StandardResponse(
-            status=True, #[cite: 1]
-            msg="Job execution record retrieved.", #[cite: 1]
-            data={
-                "id": db_job.id, #[cite: 1]
-                "status": db_job.status.value, #[cite: 1]
-                "result_image_urls": db_job.result_image_urls #[cite: 2]
-            }
-        )
-
-    except APIException:
-        raise
-    except Exception as e:
-        logger.error(f"Error reading 360 status: {str(e)}", exc_info=True) #[cite: 1]
-        raise APIException(status_code=500, msg="Internal server exception reading pipeline profile indicators.") #[cite: 1]
+        db.rollback()
+        logger.error(f"360 generation crash: {str(e)}", exc_info=True)
+        raise APIException(status_code=500, msg="Failed to register 360 AI task pipeline.")
