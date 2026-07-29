@@ -1,8 +1,8 @@
 from pydantic import BaseModel,EmailStr,Field,field_validator
-from typing   import Any,Optional
+from typing   import Any,Optional,List,Dict
 from datetime import datetime
 import re
-from app.models import GarmentCategory, JobStatus
+from app.models import GarmentCategory, JobStatus,StudioJobType
 
 # --- User Schemas ---
 class UserCreate(BaseModel):
@@ -71,3 +71,27 @@ class ResetPasswordRequest(BaseModel):
     email: EmailStr
     reset_token: str
     new_password: str
+    
+    
+    
+
+class GoogleLoginPayload(BaseModel):
+    sub: str
+    name: str
+    given_name: Optional[str] = None
+    picture: Optional[str] = None
+    email: EmailStr
+    email_verified: bool
+    
+    
+class PromptTemplateItem(BaseModel):
+    id: int
+    job_type: StudioJobType
+    title: Optional[str]
+    prompt_text: str
+    
+    class Config:
+        from_attributes = True
+
+class PromptTemplateResponse(StandardResponse):
+    data: List[PromptTemplateItem]

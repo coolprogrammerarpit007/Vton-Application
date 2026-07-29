@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/utils", tags=["Image Utilities"])
 
 # Consistent application path context matching main configurations
-BASE_URL = "http://127.0.0.1:8000"
+BASE_URL = "https://vton-backend.falcondetectives.com"
 UPLOAD_DIR = "static_uploads"
 
 # Ensure runtime save targets exist safely on startup

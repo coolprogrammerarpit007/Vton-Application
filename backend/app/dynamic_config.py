@@ -1,9 +1,10 @@
 import logging
 import json
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request,Query
 from sqlalchemy.orm import Session
 
-from . import models
+from typing import Optional
+from . import models,schemas
 from .database import get_db
 from .schemas import StandardResponse
 from app.exceptions import APIException
@@ -180,3 +181,32 @@ def get_tryon_prompts(
     except Exception as e:
         logger.error(f"Error fetching tryon prompts: {str(e)}", exc_info=True)
         raise APIException(status_code=500, msg="Failed to retrieve styling prompts.")
+    
+    
+    
+@router.get("/prompts", response_model=schemas.PromptTemplateResponse)
+def get_dynamic_prompts(
+    job_type: Optional[models.StudioJobType] = Query(None, description="Filter prompts by specific AI tool"),
+    db: Session = Depends(get_db)
+):
+    try:
+        # Base query to only fetch active prompts
+        query = db.query(models.PromptTemplate).filter(models.PromptTemplate.is_active == True)
+        
+        # Apply filter if the frontend passed a job_type (e.g., ?job_type=model_create)
+        if job_type:
+            query = query.filter(models.PromptTemplate.job_type == job_type)
+            
+        prompts = query.order_by(models.PromptTemplate.id.asc()).all()
+        
+        return schemas.PromptTemplateResponse(
+            status=True,
+            msg="Prompts retrieved successfully",
+            data=prompts
+        )
+    except Exception as e:
+        raise APIException(status_code=500, msg=f"Failed to fetch prompts: {str(e)}")
+    
+    
+    
+    

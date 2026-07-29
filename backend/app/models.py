@@ -108,12 +108,18 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String(50), nullable=False)
     email = Column(String(100), unique=True, index=True, nullable=False)
-    hashed_password = Column(String(255), nullable=False)
+    hashed_password = Column(String(255), nullable=True)
     
     # NEW PROFILE COLUMNS ADDED
     full_name = Column(String(100), nullable=True)
     avatar_url = Column(String(255), nullable=True)
     plan_name = Column(String(50), default="PRO", nullable=False)
+    
+    # Tracks login method: "local" or "google"
+    auth_provider = Column(String(20), default="local", nullable=False)
+    
+    # NEW: Store Google's unique subject identifier
+    google_sub = Column(String(255), unique=True, index=True, nullable=True)
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -132,6 +138,9 @@ class TryonPromptPreset(Base):
     
     created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now(), nullable=False)
+    
+    
+
     
     
 class TryOnJob(Base):
@@ -255,6 +264,19 @@ class StudioJobType(str, enum.Enum):
     IMAGE_TO_VIDEO = "image_to_video"
     BACKGROUND_CHANGE = "background_change"
     FACE_TO_MODEL = "face_to_model"
+    
+    
+# NEW MODEL: To store dynamic prompts
+class PromptTemplate(Base):
+    __tablename__ = "prompt_templates"
+
+    id = Column(Integer, primary_key=True, index=True)
+    job_type = Column(Enum(StudioJobType), nullable=False, index=True)
+    title = Column(String(100), nullable=True)  # A short name for the UI (e.g., "Cinematic Studio")
+    prompt_text = Column(Text, nullable=False)  # The actual prompt string
+    is_active = Column(Boolean, default=True)   # Allows admin to disable prompts without deleting
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now())
     
     
 class StudioJob(Base):

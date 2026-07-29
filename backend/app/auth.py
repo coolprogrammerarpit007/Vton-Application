@@ -5,13 +5,15 @@ from email.message import EmailMessage
 from fastapi import APIRouter, Depends, status
 from pydantic import EmailStr
 from sqlalchemy.orm import Session
+# from google.oauth2 import id_token
+# from google.auth.transport import requests
 from datetime import datetime, timedelta
 
 # Import your database models and session dependency
 from . import models
 from .schemas import (
     UserCreate, UserLogin, StandardResponse,
-    ForgotPasswordRequest, VerifyOTPRequest, ResetPasswordRequest
+    ForgotPasswordRequest, VerifyOTPRequest, ResetPasswordRequest,GoogleLoginPayload
 )
 from .database import get_db
 from app.exceptions import APIException
@@ -67,6 +69,8 @@ if not SECRET_KEY:
     logger.critical("Failed to start: JWT_SECRET_KEY is missing from .env file!")
     raise ValueError("No JWT_SECRET_KEY set in .env file")
 
+
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7 # 7 Days
 
@@ -234,7 +238,97 @@ def register_user(user: UserCreate, db: Session = Depends(get_db)):
         logger.error(f"Error during user registration for {user.email}: {str(e)}")
         db.rollback()
         raise APIException(status_code=500, msg="Internal server error during registration")
+    
+    
+    
+    
+@router.post("/login-via-google", response_model=StandardResponse)
+def google_auth_login(payload: GoogleLoginPayload, db: Session = Depends(get_db)):
+    try:
+        # 1. Validate payload basics
+        if not payload.email or not payload.email_verified:
+            raise APIException(status_code=200, msg="Unverified or missing Google email address.")
+        if not payload.sub:
+            raise APIException(status_code=200, msg="Missing Google security identifier (sub).")
 
+        # 2. Primary Verification: Check if user exists by their unique Google 'sub'
+        db_user = db.query(models.User).filter(models.User.google_sub == payload.sub).first()
+
+        if not db_user:
+            # Fallback Verification: Check if they previously registered with this email
+            db_user = db.query(models.User).filter(models.User.email == payload.email).first()
+            
+            if db_user:
+                # Link the Google 'sub' to their existing account
+                db_user.google_sub = payload.sub
+                db_user.auth_provider = "google"
+                
+                # Optional: If they don't have an avatar yet, use their Google picture
+                if not getattr(db_user, 'avatar_url', None) and payload.picture:
+                    db_user.avatar_url = payload.picture
+                    
+                    
+                db.commit()
+                logger.info(f"Linked Google sub to existing user: {db_user.email} (ID: {db_user.id})")
+            else:
+                # Register a completely new user
+                db_user = models.User(
+                    username=payload.name,
+                    email=payload.email,
+                    hashed_password=None,
+                    auth_provider="google",
+                    google_sub=payload.sub,  # Store the secure sub here,
+                    avatar_url=payload.picture
+                )
+                db.add(db_user)
+                db.commit()
+                db.refresh(db_user)
+                logger.info(f"New user registered via Google sub: {db_user.email} (ID: {db_user.id})")
+        else:
+            # User verified successfully via 'sub'
+            logger.info(f"Existing user logged in via Google sub: {db_user.email} (ID: {db_user.id})")
+            
+            # NEW FIX: If the existing user has a NULL avatar in the database, update it now
+            if not getattr(db_user, 'avatar_url', None) and payload.picture:
+                db_user.avatar_url = payload.picture
+                db.commit()
+                db.refresh(db_user)
+                logger.info(f"Updated missing avatar_url for existing user: {db_user.email}")
+
+        # 3. Issue your system's standard JWT Access Token
+        access_token = create_access_token(data={"sub": str(db_user.id)})
+        
+        # Format the avatar URL if it is a local upload path
+        avatar_path = getattr(db_user, 'avatar_url', None)
+        base_url = "https://vton-backend.falcondetectives.com"
+        
+        # If the database stores a relative path like "static_uploads/avatars/..." we convert it to an absolute URL
+        if avatar_path and not avatar_path.startswith("http"):
+            avatar_path = f"{base_url}/{avatar_path}"
+        
+        return StandardResponse(
+            status=True,
+            msg="Successfully authenticated via Google",
+            data={
+                "access_token": access_token, 
+                "token_type": "bearer",
+                "user": {
+                    "id": db_user.id,
+                    "username": db_user.username,
+                    "email": db_user.email,
+                    "picture": payload.picture,
+                    "avatar_url": avatar_path,
+                    "provider": db_user.auth_provider
+                }
+            }
+        )
+
+    except APIException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Google Auth Error: {str(e)}", exc_info=True)
+        raise APIException(status_code=500, msg="Internal server error processing Google login.")
 
 
 @router.post("/logout", response_model=StandardResponse)

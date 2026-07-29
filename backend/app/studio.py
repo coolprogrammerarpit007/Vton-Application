@@ -14,6 +14,9 @@ from .schemas import StandardResponse
 from .exceptions import APIException
 
 
+from sqlalchemy import func
+
+
 
 
 logger = logging.getLogger(__name__)
@@ -422,6 +425,12 @@ async def model_create(
     face_expression: Optional[str] = Form("Calm"),
     skin_color: Optional[str] = Form("Fair"),
     
+    # --- NEW DYNAMIC VARIABLES (Add these to your API endpoint/form) ---
+    camera_framing: Optional[str] = Form("Medium shot, from waist up"), # e.g., "Full body shot", "Close-up portrait", "Three-quarter body photo"
+    camera_angle: Optional[str] = Form("Eye-level angle"), # e.g., "Low side angle", "High angle"
+    outfit_description: Optional[str] = Form("wearing a black ribbed tank top"),
+    background_setting: Optional[str] = Form("standing in front of a modern gray tiled wall"),
+    
     # --- STANDARD PARAMS ---
     custom_prompt: Optional[str] = Form(None),                               # Fallback for manual override
     image_reference: Optional[UploadFile] = File(None),                      # Optional: Composition/pose inspiration
@@ -441,15 +450,36 @@ async def model_create(
         final_prompt = custom_prompt.strip()
     
     else:
-        # Build the prompt strictly from the provided UI attributes
-        final_prompt = (
-            f"A highly detailed, professional studio portrait of a {age}-year-old {ethnicity} {gender}, "
-            f"with a {build_type} body build. "
-            f"The model has {skin_color} skin, an {face_shape} face shape, a {jawline} jawline, "
-            f"and {eyebrow} eyebrows. Their eyes are {eye_color}, showing a {face_expression} expression. "
-            f"Hair details: {hair_length}, {hair_color}, {hair_type} texture, styled as {hair_style}. "
-            f"Fashion photography, {resolution}, photorealistic, cinematic lighting."
-        )
+        # # Build the prompt strictly from the provided UI attributes
+        # final_prompt = (
+        #     f"A highly detailed, professional studio portrait of a {age}-year-old {ethnicity} {gender}, "
+        #     f"with a {build_type} body build. "
+        #     f"The model has {skin_color} skin, an {face_shape} face shape, a {jawline} jawline, "
+        #     f"and {eyebrow} eyebrows. Their eyes are {eye_color}, showing a {face_expression} expression. "
+        #     f"Hair details: {hair_length}, {hair_color}, {hair_type} texture, styled as {hair_style}. "
+        #     f"Fashion photography, {resolution}, photorealistic, cinematic lighting."
+        # )
+        
+        # --- UPDATED MASTER PROMPT ---
+            final_prompt = (
+                # 1. Framing and Camera Angle
+                f"{camera_framing} from a {camera_angle}, "
+                
+                # 2. Subject Profile (Physical Attributes)
+                f"of a {age}-year-old {ethnicity} {gender} with a {build_type} body build. "
+                f"The model has {skin_color} skin, an {face_shape} face shape, a {jawline} jawline, "
+                f"and {eyebrow} eyebrows. Their eyes are {eye_color}, showing a {face_expression} expression. "
+                f"Hair details: {hair_length}, {hair_color}, {hair_type} texture, styled as {hair_style}. "
+                
+                # 3. Garment Specifications (The Outfit)
+                f"The model is {outfit_description}. "
+                
+                # 4. Environmental Context (The Background)
+                f"The setting is {background_setting}. "
+                
+                # 5. Technical Parameters (Lighting and Style)
+                f"Fashion photography, {resolution}, photorealistic, cinematic lighting, shot on 85mm lens, high-definition."
+            )
         
     # Payload strictly for FASHN API
     fashn_input_data = {
@@ -542,17 +572,97 @@ async def model_create(
     
     
 # ==========================================
+
+# Original Working Code for getting models
+
+
+# GET USER MODELS (Retrieve AI Human Generation History)
+# ==========================================
+# @router.get("/my-models", response_model=StandardResponse)
+# async def get_user_models(
+#     skip: int = Query(0, ge=0, description="Number of records to skip for pagination"),
+#     limit: int = Query(20, ge=1, le=100, description="Max number of records to return"),
+#     db: Session = Depends(get_db),
+#     current_user: models.User = Depends(get_current_user)
+# ):
+#     try:
+#         # 1. Query the database for jobs matching the user and job type
+#         base_query = db.query(models.StudioJob).filter(
+#             models.StudioJob.user_id == current_user.id,
+#             models.StudioJob.job_type == models.StudioJobType.MODEL_CREATE,
+#             models.StudioJob.status == models.JobStatus.COMPLETED,
+#             models.StudioJob.is_active == True
+#         )
+
+#         # 2. Get the total count for frontend pagination logic
+#         total_count = base_query.count()
+
+#         # 3. Fetch the paginated records, ordering by newest first
+#         # Note: If your StudioJob model has a 'created_at' column, use models.StudioJob.created_at.desc() instead
+#         jobs = base_query.order_by(models.StudioJob.id.desc()).offset(skip).limit(limit).all()
+
+#         # 4. Serialize the data to extract the generated image URLs
+#         formatted_jobs = []
+#         for job in jobs:
+            
+#             # Extract prompt safely from input_data JSON column
+#             prompt_text = ""
+#             if job.input_data and isinstance(job.input_data, dict):
+#                 prompt_text = job.input_data.get("prompt", "")
+            
+#             # Extract generated images directly from the result_urls column
+#             generated_images = []
+#             if job.result_urls:
+#                 # If your DB returns a string instead of a native list/JSON, use json.loads(job.result_urls)
+#                 generated_images = job.result_urls if isinstance(job.result_urls, list) else json.loads(job.result_urls)
+                
+#             # Handle enum serialization for status
+#             job_status = job.status.value if hasattr(job.status, 'value') else job.status
+
+#             formatted_jobs.append({
+#                 "job_id": job.id,
+#                 "fashn_job_id": job.fashn_job_id,
+#                 "status": job_status,
+#                 "prompt": prompt_text,
+#                 "generated_image_urls": generated_images,  # Mapped directly to your DB column
+#                 "created_at": job.created_at,
+#                 "updated_at": job.updated_at
+#             })
+
+#         # 5. Format the response
+#         return StandardResponse(
+#             status=True,
+#             msg="User models retrieved successfully.",
+#             data={
+#                 "total": total_count,
+#                 "skip": skip,
+#                 "limit": limit,
+#                 "jobs": formatted_jobs
+#             }
+#         )
+        
+
+#     except Exception as e:
+        # Catch and handle database or unexpected errors consistently
+        raise APIException(status_code=500, msg=f"Failed to fetch models: {str(e)}")
+
+# ************************** End of Original Working code *******************
+
+# ************** Updated My-Models Code *************************
+
+# ==========================================
 # GET USER MODELS (Retrieve AI Human Generation History)
 # ==========================================
 @router.get("/my-models", response_model=StandardResponse)
 async def get_user_models(
+    gender: Optional[str] = Query(None, description="Filter models by gender (e.g., 'Male' or 'Female')"), # <-- NEW PARAMETER
     skip: int = Query(0, ge=0, description="Number of records to skip for pagination"),
     limit: int = Query(20, ge=1, le=100, description="Max number of records to return"),
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
     try:
-        # 1. Query the database for jobs matching the user and job type
+        # 1. Base query for the current user's completed models
         base_query = db.query(models.StudioJob).filter(
             models.StudioJob.user_id == current_user.id,
             models.StudioJob.job_type == models.StudioJobType.MODEL_CREATE,
@@ -560,26 +670,35 @@ async def get_user_models(
             models.StudioJob.is_active == True
         )
 
-        # 2. Get the total count for frontend pagination logic
+        # 2. NEW: Filter by Gender if provided
+        if gender:
+            # MySQL / MariaDB compatible JSON extraction
+            # We use lower() on both sides to make it case-insensitive (e.g., 'female' matches 'Female')
+            base_query = base_query.filter(
+                func.lower(func.json_unquote(func.json_extract(models.StudioJob.input_data, '$.attributes.gender'))) == gender.lower()
+            )
+
+        # 3. Get the total count for frontend pagination logic
         total_count = base_query.count()
 
-        # 3. Fetch the paginated records, ordering by newest first
-        # Note: If your StudioJob model has a 'created_at' column, use models.StudioJob.created_at.desc() instead
+        # 4. Fetch the paginated records, ordering by newest first
         jobs = base_query.order_by(models.StudioJob.id.desc()).offset(skip).limit(limit).all()
 
-        # 4. Serialize the data to extract the generated image URLs
+        # 5. Serialize the data
         formatted_jobs = []
         for job in jobs:
             
-            # Extract prompt safely from input_data JSON column
-            prompt_text = ""
-            if job.input_data and isinstance(job.input_data, dict):
-                prompt_text = job.input_data.get("prompt", "")
+            # Safely parse input_data whether it's stored as a native dict (JSON column) or string
+            input_dict = job.input_data if isinstance(job.input_data, dict) else (json.loads(job.input_data) if job.input_data else {})
             
-            # Extract generated images directly from the result_urls column
+            prompt_text = input_dict.get("prompt", "")
+            
+            # NEW: Extract the full attributes dictionary (age, hair, face, etc.)
+            attributes = input_dict.get("attributes", {}) 
+            
+            # Extract generated images
             generated_images = []
             if job.result_urls:
-                # If your DB returns a string instead of a native list/JSON, use json.loads(job.result_urls)
                 generated_images = job.result_urls if isinstance(job.result_urls, list) else json.loads(job.result_urls)
                 
             # Handle enum serialization for status
@@ -590,12 +709,13 @@ async def get_user_models(
                 "fashn_job_id": job.fashn_job_id,
                 "status": job_status,
                 "prompt": prompt_text,
-                "generated_image_urls": generated_images,  # Mapped directly to your DB column
+                "attributes": attributes,  # <-- NEW: Appended to the response for the frontend
+                "generated_image_urls": generated_images, 
                 "created_at": job.created_at,
                 "updated_at": job.updated_at
             })
 
-        # 5. Format the response
+        # 6. Format the response
         return StandardResponse(
             status=True,
             msg="User models retrieved successfully.",
@@ -607,10 +727,9 @@ async def get_user_models(
             }
         )
         
-
     except Exception as e:
-        # Catch and handle database or unexpected errors consistently
         raise APIException(status_code=500, msg=f"Failed to fetch models: {str(e)}")
+
 
 # ==========================================
 # 6. UNIFIED STATUS POLLING ENDPOINT
