@@ -3,7 +3,7 @@ import logging
 import asyncio
 from typing import Optional                           
 from sqlalchemy.orm import Session
-from fastapi import APIRouter, Depends, Form, File, UploadFile, BackgroundTasks,Query
+from fastapi import APIRouter, Depends, Form, File, UploadFile, BackgroundTasks,Query,Path
 
 from . import models
 from .database import get_db, SessionLocal
@@ -405,9 +405,127 @@ async def change_background(
 # ==========================================
 # 5. MODEL CREATE (Generate AI Human from Text)
 # ==========================================
+
+# ==========================================
+# SMART PROMPT SANITIZER HELPERS
+# ==========================================
+
+def build_smart_gender_anchor(age_str: str, gender_str: str, ethnicity_str: str) -> tuple[str, str]:
+    """Enforces non-negotiable age, gender, and ethnicity anchors."""
+    try:
+        age_int = int(age_str)
+    except (ValueError, TypeError):
+        age_int = 25
+        
+    g_lower = (gender_str or "female").strip().lower()
+    e_str = (ethnicity_str or "Caucasian").strip()
+    
+    if g_lower == "male":
+        if age_int < 18:
+            noun = "male boy"
+        elif age_int <= 25:
+            noun = "young male man"
+        else:
+            noun = "male man"
+        gender_weight = "(masculine male features, handsome male face:1.4)"
+        
+    elif g_lower == "female":
+        if age_int < 18:
+            noun = "female girl"
+        elif age_int <= 25:
+            noun = "young female woman"
+        else:
+            noun = "female woman"
+        gender_weight = "(feminine female features, beautiful female face:1.4)"
+        
+    else:
+        noun = f"{gender_str} person"
+        gender_weight = ""
+        
+    anchor = f"a {age_int}-year-old {e_str} {noun}"
+    return anchor, gender_weight
+
+
+def sanitize_hair_details(hair_length: str, hair_color: str, hair_type: str, hair_style: str) -> str:
+    """Reconciles contradictory hair attributes (e.g., Short length + Long style)."""
+    length = (hair_length or "").strip()
+    color = (hair_color or "").strip()
+    htype = (hair_type or "").strip()
+    style = (hair_style or "").strip()
+    
+    # Resolve Short vs Long conflicts
+    if length.lower() == "short" and "long" in style.lower():
+        style = style.lower().replace("long", "").strip().capitalize()
+    elif length.lower() in ["long", "waist-length"] and "short" in style.lower():
+        style = style.lower().replace("short", "").strip().capitalize()
+
+    parts = []
+    if length and length.upper() != "N/A":
+        parts.append(length)
+    if color and color.upper() != "N/A":
+        parts.append(color)
+    if htype and htype.upper() != "N/A":
+        parts.append(f"{htype} texture")
+    
+    base_hair = ", ".join(parts) if parts else "neatly groomed hair"
+    
+    if style and style.upper() != "N/A":
+        return f"{base_hair}, styled as {style}"
+    return base_hair
+
+
+def sanitize_outfit_for_gender(outfit: str, gender: str) -> str:
+    """Prevents female garments from overpowering a male model generation."""
+    outfit_clean = (outfit or "").strip()
+    gender_lower = (gender or "").strip().lower()
+    
+    if not outfit_clean:
+        return "wearing a casual top"
+
+    # Preposition formatting
+    prefixes = ("wearing", "dressed in", "in ", "clad in")
+    if not any(outfit_clean.lower().startswith(p) for p in prefixes):
+        first_word = outfit_clean.split()[0].lower()
+        if first_word in ["a", "an", "the"]:
+            outfit_clean = f"wearing {outfit_clean}"
+        else:
+            outfit_clean = f"wearing a {outfit_clean}"
+
+    # Handle male + female garment contradiction
+    if gender_lower == "male":
+        female_garments = ["dress", "skirt", "gown", "blouse", "bikini", "bra", "crop top", "frock", "saree", "lehenga"]
+        if any(fg in outfit_clean.lower() for fg in female_garments):
+            # Convert female garments to male equivalents to prevent gender distortion
+            outfit_clean = outfit_clean.lower()
+            outfit_clean = outfit_clean.replace("dress", "casual summer outfit")
+            outfit_clean = outfit_clean.replace("skirt", "shorts")
+            outfit_clean = outfit_clean.replace("gown", "tailored suit")
+            outfit_clean = outfit_clean.replace("blouse", "shirt")
+            outfit_clean = outfit_clean.replace("bikini", "swim trunks")
+            outfit_clean = outfit_clean.replace("frock", "shirt")
+            outfit_clean = f"{outfit_clean.capitalize()} (masculine male apparel)"
+
+    return outfit_clean
+
+
+def sanitize_background(setting: str) -> str:
+    """Fixes incomplete background/setting grammar."""
+    setting_clean = (setting or "").strip()
+    if not setting_clean:
+        return "standing in a minimalist photography studio setting"
+        
+    prefixes = ("standing", "sitting", "in ", "at ", "against", "in front of", "located in")
+    if not any(setting_clean.lower().startswith(p) for p in prefixes):
+        return f"standing in a {setting_clean}"
+    return setting_clean
+
+
+# ==========================================
+
 @router.post("/model-create", response_model=StandardResponse)
 async def model_create(
     # --- DYNAMIC PROMPT ATTRIBUTES (From Frontend UI) ---
+    model_name:str = Form(...),
     age: Optional[str] = Form("25"),
     gender: Optional[str] = Form("Female"),
     ethnicity: Optional[str] = Form("Caucasian"),
@@ -450,50 +568,62 @@ async def model_create(
         final_prompt = custom_prompt.strip()
     
     else:
-        # # Build the prompt strictly from the provided UI attributes
-        # final_prompt = (
-        #     f"A highly detailed, professional studio portrait of a {age}-year-old {ethnicity} {gender}, "
-        #     f"with a {build_type} body build. "
-        #     f"The model has {skin_color} skin, an {face_shape} face shape, a {jawline} jawline, "
-        #     f"and {eyebrow} eyebrows. Their eyes are {eye_color}, showing a {face_expression} expression. "
-        #     f"Hair details: {hair_length}, {hair_color}, {hair_type} texture, styled as {hair_style}. "
-        #     f"Fashion photography, {resolution}, photorealistic, cinematic lighting."
-        # )
+       # A. Non-negotiable Age & Gender Anchor
+        subject_anchor, gender_weight = build_smart_gender_anchor(age, gender, ethnicity)
         
-        # --- UPDATED MASTER PROMPT ---
-            final_prompt = (
-                # 1. Framing and Camera Angle
-                f"{camera_framing} from a {camera_angle}, "
-                
-                # 2. Subject Profile (Physical Attributes)
-                f"of a {age}-year-old {ethnicity} {gender} with a {build_type} body build. "
-                f"The model has {skin_color} skin, an {face_shape} face shape, a {jawline} jawline, "
-                f"and {eyebrow} eyebrows. Their eyes are {eye_color}, showing a {face_expression} expression. "
-                f"Hair details: {hair_length}, {hair_color}, {hair_type} texture, styled as {hair_style}. "
-                
-                # 3. Garment Specifications (The Outfit)
-                f"The model is {outfit_description}. "
-                
-                # 4. Environmental Context (The Background)
-                f"The setting is {background_setting}. "
-                
-                # 5. Technical Parameters (Lighting and Style)
-                f"Fashion photography, {resolution}, photorealistic, cinematic lighting, shot on 85mm lens, high-definition."
-            )
+        # B. Sanitize Hair Details
+        clean_hair = sanitize_hair_details(hair_length, hair_color, hair_type, hair_style)
         
-    # Payload strictly for FASHN API
+        # C. Sanitize Outfit (Prevents gender-garment mismatch)
+        clean_outfit = sanitize_outfit_for_gender(outfit_description, gender)
+        
+        # D. Sanitize Background
+        clean_background = sanitize_background(background_setting)
+        
+        # E. Construct Master Prompt
+        final_prompt = (
+            # 1. Framing and Camera Angle
+            f"(Close-up {camera_framing}:1.4) from a {camera_angle}, "
+            
+            # 2. Non-Negotiable Subject Anchor & Gender Weighting
+            f"of {subject_anchor} {gender_weight} with a {build_type} body build. "
+            f"The model has {skin_color} skin, an {face_shape} face shape, a {jawline} jawline, "
+            f"and {eyebrow} eyebrows. Their eyes are {eye_color}, showing a {face_expression} expression. "
+            f"Hair details: {clean_hair}. "
+            
+            # 3. Outfit & Environment
+            f"The model is {clean_outfit}. "
+            f"The setting is {clean_background}. "
+            
+            # 4. Strict Framing Enforcement
+            f"Fashion photography, (strict waist-up portrait:1.5), (lower body is strictly out of frame:1.5), "
+            f"{resolution}, photorealistic, cinematic lighting, shot on 85mm lens, high-definition."
+        )
+
+    # # --- HARDCODED NEGATIVE PROMPT ---
+    # # Prevents rendering anything below the waist, ensuring a tighter crop
+    # backend_negative_prompt = (
+    #     "full body, full length, legs, feet, shoes, knees, wide shot, long shot, "
+    #     "distance shot, standing, pants, trousers, skirt, lower body"
+    # )
+
+    # 2. Payload strictly for FASHN API
     fashn_input_data = {
         "prompt": final_prompt,
+        # "negative_prompt": backend_negative_prompt, # Inject negative prompt here
         "resolution": resolution,
         "num_images": num_images,
         "output_format": output_format
     }
+        
+    
     
     
    # Payload for your local database (includes UI attributes)
     db_input_data = {
         "prompt": final_prompt,
         "attributes": {
+            "model_name":model_name,
             "age": age,
             "gender": gender,
             "ethnicity": ethnicity,
@@ -729,6 +859,69 @@ async def get_user_models(
         
     except Exception as e:
         raise APIException(status_code=500, msg=f"Failed to fetch models: {str(e)}")
+    
+    
+    
+    
+# ==========================================
+# GET SINGLE USER MODEL (Retrieve Specific AI Human)
+# ==========================================
+@router.get("/model-detail/{job_id}", response_model=StandardResponse)
+async def get_model_detail(
+    job_id: int = Path(..., description="The unique ID of the model job"),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    try:
+        # 1. Fetch the specific job ensuring it belongs to the user and meets all criteria
+        job = db.query(models.StudioJob).filter(
+            models.StudioJob.id == job_id,
+            models.StudioJob.user_id == current_user.id,
+            models.StudioJob.job_type == models.StudioJobType.MODEL_CREATE,
+            models.StudioJob.status == models.JobStatus.COMPLETED,
+            models.StudioJob.is_active == True
+        ).first()
+
+        # 2. Return 404 if not found or unauthorized
+        if not job:
+            raise APIException(status_code=404, msg="Model not found or is no longer active.")
+
+        # 3. Safely parse input_data
+        input_dict = job.input_data if isinstance(job.input_data, dict) else (json.loads(job.input_data) if job.input_data else {})
+        prompt_text = input_dict.get("prompt", "")
+        attributes = input_dict.get("attributes", {}) 
+        
+        # 4. Extract generated images
+        generated_images = []
+        if job.result_urls:
+            generated_images = job.result_urls[0] if isinstance(job.result_urls, list) else json.loads(job.result_urls)
+            
+        # 5. Handle enum serialization for status
+        job_status = job.status.value if hasattr(job.status, 'value') else job.status
+
+        # 6. Serialize the data into the exact format used in the list API
+        formatted_job = {
+            "job_id": job.id,
+            "fashn_job_id": job.fashn_job_id,
+            "status": job_status,
+            "prompt": prompt_text,
+            "attributes": attributes,
+            "generated_image_urls": generated_images, 
+            "created_at": job.created_at,
+            "updated_at": job.updated_at
+        }
+
+        # 7. Format and return the response
+        return StandardResponse(
+            status=True,
+            msg="Model detail retrieved successfully.",
+            data=formatted_job
+        )
+        
+    except APIException:
+        raise
+    except Exception as e:
+        raise APIException(status_code=500, msg=f"Failed to fetch model details: {str(e)}")
 
 
 # ==========================================

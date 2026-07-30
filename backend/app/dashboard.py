@@ -435,7 +435,7 @@ async def get_studio_history(
         total_credits_given = fashn_credits.get("subscription", 100) or 100
 
         # 2. Query ALL Job Types for this user
-        studio_jobs = db.query(models.StudioJob).filter(models.StudioJob.user_id == current_user.id).all()
+        studio_jobs = db.query(models.StudioJob).filter(models.StudioJob.user_id == current_user.id).filter(models.StudioJob.is_active == True).all()
         tryon_jobs = db.query(models.TryOnJob).filter(models.TryOnJob.user_id == current_user.id).all()
         outfit_jobs = db.query(models.OutfitJob).filter(models.OutfitJob.user_id == current_user.id).all()
 
@@ -599,3 +599,69 @@ async def get_studio_history(
     except Exception as e:
         logger.error(f"Error fetching unified history: {str(e)}", exc_info=True)
         raise APIException(status_code=500, msg=f"Failed to load history: {str(e)}")
+    
+    
+    
+    
+    
+@router.get("/credits", response_model=StandardResponse)
+async def get_user_credits(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    try:
+        # 1. Fetch 'plan_name' from the User model (Defaults to 'Free Tier' if not set)
+        plan_name = getattr(current_user, "plan_name", "Free Tier")
+        
+        # # 2. Calculate 'credits_used' by counting the user's completed AI generations
+        # # (Assuming 1 completed job = 1 credit used. Adjust if your logic differs)
+        # credits_used = db.query(models.StudioJob).filter(
+        #     models.StudioJob.user_id == current_user.id,
+        #     models.StudioJob.status == models.JobStatus.COMPLETED
+        # ).count()
+        
+        # Or if you track it directly on the user table:
+        # credits_used = getattr(current_user, "credits_used", 0)
+
+        # 3. Fetch 'total_credits_remaining' from the FASHN API
+        
+        total_credits_remaining = 0
+        subscription_credits = 0
+        on_demand_credits = 0
+        
+        if FASHN_API_KEY:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    "https://api.fashn.ai/v1/credits",
+                    headers={"Authorization": f"Bearer {FASHN_API_KEY}"},
+                    timeout=10.0
+                )
+                
+                if response.status_code == 200:
+                    fashn_data = response.json().get("credits", {})
+                    total_credits_remaining = fashn_data.get("total", 0)
+                    subscription_credits = fashn_data.get("subscription", 0)
+                    on_demand_credits = fashn_data.get("on_demand", 0)
+                else:
+                    # Log error if FASHN API fails but don't crash the whole endpoint
+                    print(f"FASHN API Error: {response.status_code} - {response.text}")
+
+        # 4. Format the Response
+        return StandardResponse(
+            status=True,
+            msg="Credits retrieved successfully.",
+            data={
+                "plan_name": plan_name,
+                # "credits_used": credits_used,
+                "total_credits_remaining": total_credits_remaining,
+                
+                # Including these optional details in case your frontend needs them
+                "fashn_breakdown": {
+                    "subscription": subscription_credits,
+                    "on_demand": on_demand_credits
+                }
+            }
+        )
+
+    except Exception as e:
+        raise APIException(status_code=500, msg=f"Failed to fetch credit information: {str(e)}")

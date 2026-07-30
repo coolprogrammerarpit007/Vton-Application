@@ -26,6 +26,7 @@ from .dashboard import router as dashboard_router
 from .profile import router as profile_router
 from .dynamic_config import router as config_router
 from .image_utils import router as image_utils_router
+from .support import router as support_routers
 
 from .fashn_service import trigger_vton_job, check_vton_status
 from .models import MasterModuleType
@@ -94,6 +95,7 @@ app.include_router(studio_router)
 app.include_router(dashboard_router)
 app.include_router(profile_router)
 app.include_router(config_router)
+app.include_router(support_routers)
 # MOUNT SMART CROPPING ROUTER HERE:
 app.include_router(image_utils_router)
 app.mount("/static_uploads", StaticFiles(directory="static_uploads"), name="static_uploads")

@@ -274,6 +274,11 @@ class PromptTemplate(Base):
     job_type = Column(Enum(StudioJobType), nullable=False, index=True)
     title = Column(String(100), nullable=True)  # A short name for the UI (e.g., "Cinematic Studio")
     prompt_text = Column(Text, nullable=False)  # The actual prompt string
+    
+    # --- NEW COLUMNS ---
+    outfit_description = Column(Text, nullable=True)
+    background_setting = Column(Text, nullable=True)
+    
     is_active = Column(Boolean, default=True)   # Allows admin to disable prompts without deleting
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -310,3 +315,41 @@ class PasswordResetOTP(Base):
     expires_at = Column(DateTime, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    
+    
+    
+    
+#  Customer Support Platform APIs
+
+class TicketStatus(str, enum.Enum):
+    OPEN = "OPEN"
+    IN_PROGRESS = "IN_PROGRESS"
+    RESOLVED = "RESOLVED"
+    CLOSED = "CLOSED"
+    
+class TicketPriority(str, enum.Enum):
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+    CRITICAL = "CRITICAL"
+    
+    
+class SupportTicket(Base):
+    __tablename__ = "support_tickets"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    
+    subject = Column(String(255), nullable=False)
+    description = Column(Text, nullable=False)
+    
+    status = Column(Enum(TicketStatus), default=TicketStatus.OPEN, index=True)
+    priority = Column(Enum(TicketPriority), default=TicketPriority.MEDIUM)
+    
+    admin_notes = Column(Text, nullable=True) # For internal platform use
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    # Assuming you have a User model defined
+    user = relationship("User", backref="support_tickets")
