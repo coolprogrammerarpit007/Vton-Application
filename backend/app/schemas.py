@@ -135,14 +135,33 @@ class PromptTemplateResponse(StandardResponse):
     
     
     
+# Subscription Plans
+
+class SubscriptionPlanResponse(BaseModel):
+    id: int
+    plan_name: str
+    title: str
+    price: str
+    credits: int
+    is_active: bool
+
+    class Config:
+        from_attributes = True
+
+class StandardSubscriptionPlanListResponse(BaseModel):
+    status: bool
+    msg: str
+    data: List[SubscriptionPlanResponse]
+    
+    
 # Adding Schema of Payment Transaction
 
+# --- Updated Payment Schemas ---
+
 class PaymentInitiateRequest(BaseModel):
-    amount: str = Field(..., example="999.00")
-    firstname: str = Field(..., min_length=1)
-    email: EmailStr
-    phone: str = Field(..., min_length=10, max_length=15)
-    productinfo: str = Field(..., min_length=1)
+    # Frontend only sends the plan name and phone number
+    plan_name: str = Field(..., description="E.g., silver, gold, platinum")
+    phone: str = Field(default="9351469994", min_length=10, max_length=15)
 
 class PaymentInitiateResponseData(BaseModel):
     action_url: str
@@ -152,7 +171,6 @@ class StandardPaymentResponse(BaseModel):
     status: bool
     msg: str
     data: Optional[PaymentInitiateResponseData] = None
-
     
     
 

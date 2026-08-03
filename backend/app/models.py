@@ -357,6 +357,24 @@ class SupportTicket(Base):
     
     
     
+# app/models.py
+
+class SubscriptionPlan(Base):
+    __tablename__ = "subscription_plans"
+
+    id = Column(Integer, primary_key=True, index=True)
+    plan_name = Column(String(50), unique=True, index=True, nullable=False)  # e.g. "silver"
+    title = Column(String(100), nullable=False)                              # e.g. "Silver Plan"
+    price = Column(String(50), nullable=False)                               # e.g. "1100.00"
+    credits = Column(Integer, nullable=False)                                # e.g. 200
+    is_active = Column(Boolean, default=True, nullable=False)
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    
+    
+    
+    
 # Adding Transaction Table to database
 
 class TransactionStatus(str, enum.Enum):

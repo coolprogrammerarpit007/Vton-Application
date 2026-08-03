@@ -58,36 +58,50 @@ async def initiate_payment(
     """
     Initiates payment request, records transaction state in DB, and yields PayU payload.
     """
-    txnid = f"VTON{int(time.time())}{random.randint(1000, 9999)}"
-    user_id = current_user.id if current_user else None
+    
+    # 1. Securely fetch plan details from the database
+    plan = db.query(models.SubscriptionPlan).filter(
+        models.SubscriptionPlan.plan_name == req.plan_name.lower(),
+        models.SubscriptionPlan.is_active == True
+    ).first()
 
-    # 1. Create DB record in PENDING status
+    if not plan:
+        raise APIException(status_code=400, msg="Invalid or inactive subscription plan selected.")
+    
+    
+    # 2. Extract user details safely from the JWT context (Fallback to username if full_name is null)
+    user_firstname = current_user.full_name or current_user.username
+    user_email = current_user.email
+    
+    txnid = f"VTON{int(time.time())}{random.randint(1000, 9999)}"
+    
+    # 3. Create DB record in PENDING status
     transaction = models.PaymentTransaction(
         txnid=txnid,
-        user_id=user_id,
-        amount=req.amount,
-        firstname=req.firstname,
-        email=req.email,
-        phone=req.phone,
-        product_info=req.productinfo,
+        user_id=current_user.id,
+        amount=plan.price,           # Securely set from DB plan
+        product_info=plan.title,     # Securely set from DB plan
+        firstname=user_firstname,
+        email=user_email,
+        phone=req.phone,             # Taken from frontend as phone is not in User model
         status=models.TransactionStatus.PENDING
     )
     db.add(transaction)
     db.commit()
 
-    # 2. Build PayU Payload
+   # 4. Build PayU Payload
     payment_data = {
         "key": settings.PAYU_MERCHANT_KEY,
         "txnid": txnid,
-        "amount": req.amount,
-        "productinfo": req.productinfo,
-        "firstname": req.firstname,
-        "email": req.email,
+        "amount": plan.price,
+        "productinfo": plan.title,
+        "firstname": user_firstname,
+        "email": user_email,
         "phone": req.phone,
         "surl": f"{settings.BACKEND_URL}/api/payment/callback?type=success", 
         "furl": f"{settings.BACKEND_URL}/api/payment/callback?type=fail",
-        "udf1": transaction.id,
-        "udf2": "",
+        "udf1": str(transaction.id),
+        "udf2": plan.plan_name, # Pass the plan_name for the callback to read
         "udf3": "",
         "udf4": "",
         "udf5": ""
@@ -97,7 +111,7 @@ async def initiate_payment(
 
     return schemas.StandardPaymentResponse(
         status=True,
-        msg="Payment transaction initiated successfully.",
+        msg=f"Payment transaction initiated successfully for {plan.title}.",
         data={
             "action_url": settings.PAYU_BASE_URL,
             "payment_data": payment_data
@@ -116,6 +130,7 @@ async def payment_callback(request: Request, db: Session = Depends(get_db)):
     txnid = data_dict.get('txnid', '')
     status = data_dict.get('status', '')
     payu_money_id = data_dict.get('mihpayid', '')
+    purchased_plan_name = data_dict.get('udf2', '') # Retrieve the plan name
 
     logger.info(f"PayU Callback received for TxnID: {txnid} | Status: {status}")
 
@@ -142,15 +157,24 @@ async def payment_callback(request: Request, db: Session = Depends(get_db)):
             status_code=303
         )
 
-    # 3. Handle Status Update
+    # 3. Handle Status Update and Allocate Credits
     if status == 'success':
         txn.status = models.TransactionStatus.SUCCESS
         
-        # Optional: Grant plan or credits to user here
-        if txn.user_id:
+        # Grant plan and credits to the user dynamically
+        if txn.user_id and purchased_plan_name:
             user = db.query(models.User).filter(models.User.id == txn.user_id).first()
-            if user:
-                user.plan_name = "PRO" # Update user subscription tier
+            plan = db.query(models.SubscriptionPlan).filter(models.SubscriptionPlan.plan_name == purchased_plan_name).first()
+            
+            if user and plan:
+                user.plan_name = plan.title 
+                
+                # Ensure the user has a default credit counter before adding
+                if not hasattr(user, 'credits') or user.credits is None:
+                    user.credits = 0
+                
+                user.credits += plan.credits
+                logger.info(f"Successfully added {plan.credits} credits to User {user.id} for {plan.title}")
                 
         db.commit()
         return RedirectResponse(
@@ -164,4 +188,3 @@ async def payment_callback(request: Request, db: Session = Depends(get_db)):
             url=f"{settings.FRONTEND_URL}/payment-status?status=failed&txnid={txnid}",
             status_code=303
         )
-
