@@ -135,6 +135,26 @@ class PromptTemplateResponse(StandardResponse):
     
     
     
+# Adding Schema of Payment Transaction
+
+class PaymentInitiateRequest(BaseModel):
+    amount: str = Field(..., example="999.00")
+    firstname: str = Field(..., min_length=1)
+    email: EmailStr
+    phone: str = Field(..., min_length=10, max_length=15)
+    productinfo: str = Field(..., min_length=1)
+
+class PaymentInitiateResponseData(BaseModel):
+    action_url: str
+    payment_data: Dict[str, Any]
+
+class StandardPaymentResponse(BaseModel):
+    status: bool
+    msg: str
+    data: Optional[PaymentInitiateResponseData] = None
+
+    
+    
 
     
     

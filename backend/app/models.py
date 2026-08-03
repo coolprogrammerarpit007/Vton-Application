@@ -353,3 +353,39 @@ class SupportTicket(Base):
 
     # Assuming you have a User model defined
     user = relationship("User", backref="support_tickets")
+    
+    
+    
+    
+# Adding Transaction Table to database
+
+class TransactionStatus(str, enum.Enum):
+    PENDING = "pending"
+    SUCCESS = "success"
+    FAILED = "failed"
+    TAMPERED = "tampered"
+    
+    
+    
+class PaymentTransaction(Base):
+    __tablename__ = "payment_transactions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    txnid = Column(String(255), unique=True, index=True, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    
+    amount = Column(String(50), nullable=False)
+    firstname = Column(String(100), nullable=False)
+    email = Column(String(150), nullable=False)
+    phone = Column(String(20), nullable=False)
+    product_info = Column(String(255), nullable=False)
+    
+    payu_money_id = Column(String(255), nullable=True) # ID returned by PayU
+    status = Column(Enum(TransactionStatus), default=TransactionStatus.PENDING, nullable=False)
+    raw_response = Column(JSON, nullable=True)
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    # Relationship to user
+    user = relationship("User", backref="payment_transactions")
