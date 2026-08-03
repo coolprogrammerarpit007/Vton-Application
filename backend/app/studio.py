@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 router = APIRouter(prefix="/api/studio", tags=["AI Creative Studio"])
-base_url = "https://vton-backend.falcondetectives.com"
+base_url = "https://vton-backend.microcrm.in"
 
 
 
@@ -347,60 +347,89 @@ async def change_background(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    # 1. Save and resolve the original image
-    orig_url = await process_upload(original_image)
+    # 1. Save and resolve the original image (with exception handling)
+    try:
+        orig_url = await process_upload(original_image)
+        
+        # 2. Process the reference context image if the user uploaded one
+        ref_bg_url = None
+        if reference_bg_image:
+            ref_bg_url = await process_upload(reference_bg_image)
+    except Exception as e:
+        raise APIException(status_code=400, msg=f"Failed to process image uploads: {str(e)}")
     
-    # 2. Process the reference context image if the user uploaded one
-    ref_bg_url = None
-    if reference_bg_image:
-        ref_bg_url = await process_upload(reference_bg_image)
+    
+    # 3. --- PRO-TIP: DYNAMIC PROMPT HARMONIZATION & SHADOW CONTROL ---
+    try:
+        prompt_lower = new_background_prompt.lower()
         
-    # 3. --- PRO-TIP: PROMPT HARMONIZATION ---
-    # We intercept the user's basic prompt and inject professional lighting instructions.
-    # This prevents the "photoshopped" look by forcing the AI to bleed environmental light onto the subject.
-    harmonized_prompt = (
-        f"{new_background_prompt.strip()}. "
-        "The subject is fully immersed in this environment. Global illumination, "
-        "matching color grading, environmental light bleeding onto the subject, "
-        "seamless shadows at the feet, highly realistic photographic composite."
-    )
+        # Check if the user is asking for a night, dark, or evening scene
+        is_night_scene = any(word in prompt_lower for word in ["night", "dark", "evening", "midnight", "dusk"])
         
-    # 4. Save tracking state to database
-    input_data = {
-        "original_image": orig_url, 
-        "user_prompt": new_background_prompt,
-        "harmonized_prompt": harmonized_prompt,
-        "resolution": resolution,
-        "generation_mode": generation_mode
-    }
-    if ref_bg_url:
-        input_data["image_context"] = ref_bg_url
+        # Dynamically adjust lighting and shadow instructions based on the time of day
+        if is_night_scene:
+            lighting_instructions = (
+                "Nighttime environmental lighting, subtle ambient occlusion, "
+                "diffuse ambient light, faint and blurred ground contact shadows, "
+                "no harsh directional shadows, absolutely no mirror reflections on the ground."
+            )
+        else:
+            lighting_instructions = (
+                "Natural global illumination, matching color grading, "
+                "soft and realistic contact shadows at the feet, diffuse lighting, "
+                "absolutely no glossy or mirror-like reflections on the ground."
+            )
 
-    db_job = models.StudioJob(
-        user_id=current_user.id,
-        job_type=models.StudioJobType.BACKGROUND_CHANGE,
-        input_data=input_data
-    )
-    db.add(db_job)
-    db.commit()
-    db.refresh(db_job)
+        harmonized_prompt = (
+            f"{new_background_prompt.strip()}. "
+            f"The subject is perfectly integrated into this scene. "
+            f"{lighting_instructions} Highly realistic photographic composite, natural depth of field."
+        )
+            
+        # 4. Save tracking state to database
+        input_data = {
+            "original_image": orig_url, 
+            "user_prompt": new_background_prompt,
+            "harmonized_prompt": harmonized_prompt,
+            "resolution": resolution,
+            "generation_mode": generation_mode
+        }
+        if ref_bg_url:
+            input_data["image_context"] = ref_bg_url
+
+        db_job = models.StudioJob(
+            user_id=current_user.id,
+            job_type=models.StudioJobType.BACKGROUND_CHANGE,
+            input_data=input_data
+        )
+        db.add(db_job)
+        db.commit()
+        db.refresh(db_job)
+
+    except Exception as e:
+        # Rollback the database transaction if anything fails during DB save
+        db.rollback()
+        raise APIException(status_code=500, msg=f"Database error while saving job: {str(e)}")
 
     # 5. Dispatch the asynchronous background task chain
-    background_tasks.add_task(
-        process_advanced_background_chain, 
-        job_id=db_job.id, 
-        original_url=orig_url, 
-        harmonized_prompt=harmonized_prompt, 
-        reference_bg_url=ref_bg_url,
-        resolution=resolution,
-        generation_mode=generation_mode
-    )
+    try:
+        background_tasks.add_task(
+            process_advanced_background_chain, 
+            job_id=db_job.id, 
+            original_url=orig_url, 
+            harmonized_prompt=harmonized_prompt, 
+            reference_bg_url=ref_bg_url,
+            resolution=resolution,
+            generation_mode=generation_mode
+        )
 
-    return StandardResponse(
-        status=True, 
-        msg="Advanced background replacement queued successfully. The AI is isolating the subject and rendering the new environment.", 
-        data={"job_id": db_job.id, "status": db_job.status.value}
-    )
+        return StandardResponse(
+            status=True, 
+            msg="Advanced background replacement queued successfully. The AI is isolating the subject and rendering the new environment.", 
+            data={"job_id": db_job.id, "status": db_job.status.value}
+        )
+    except Exception as e:
+        raise APIException(status_code=500, msg=f"Failed to queue background generation task: {str(e)}")
     
 # ==========================================
 # 5. MODEL CREATE (Generate AI Human from Text)
@@ -536,12 +565,16 @@ async def model_create(
     hair_type: Optional[str] = Form("Wavy"),
     hair_style: Optional[str] = Form("Long flowing"),
     
+    # Male Beard Type
+    beard_type:Optional[str] = Form(""),
+    
     eye_color: Optional[str] = Form("Deep brown"),
     face_shape: Optional[str] = Form("Oval"),
     jawline: Optional[str] = Form("Soft"),
     eyebrow: Optional[str] = Form("Arched"),
     face_expression: Optional[str] = Form("Calm"),
     skin_color: Optional[str] = Form("Fair"),
+    
     
     # --- NEW DYNAMIC VARIABLES (Add these to your API endpoint/form) ---
     camera_framing: Optional[str] = Form("Medium shot, from waist up"), # e.g., "Full body shot", "Close-up portrait", "Three-quarter body photo"
