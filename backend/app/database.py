@@ -1,6 +1,6 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
-from app.config import settings
+from .config import settings
 
 # 1. Create the MySQL engine connection using the dynamic URL from config
 engine = create_engine(settings.DATABASE_URL, pool_pre_ping=True)

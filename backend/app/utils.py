@@ -1,6 +1,8 @@
 import os
 import uuid
 import shutil
+import httpx
+import logging
 from fastapi import UploadFile
 
 # Define the directory where uploaded files will be stored permanently
@@ -15,21 +17,44 @@ def save_upload_file(upload_file: UploadFile) -> str:
     Appends a unique UUID to prevent file name collisions.
     Returns the newly generated unique filename.
     """
-    # 1. Clean the original filename and extract its extension
     original_name = upload_file.filename
     ext = os.path.splitext(original_name)[1]
     
-    # 2. Generate a completely unique filename using UUID4
     unique_filename = f"{uuid.uuid4().hex}{ext}"
     file_path = os.path.join(UPLOAD_DIR, unique_filename)
     
-    # 3. Stream the file directly to disk in chunks to keep memory usage minimal
     try:
         with open(file_path, "wb") as buffer:
-            # shutil.copyfileobj streams data without loading the whole file into RAM
             shutil.copyfileobj(upload_file.file, buffer)
     finally:
-        # Always clean up and close the FastAPI internal file spooler
         upload_file.file.close()
         
     return unique_filename
+
+
+async def download_and_save_remote_image(remote_url: str, upload_dir: str = UPLOAD_DIR) -> str:
+    """Downloads remote CDN assets (Fashn.ai) and saves them locally."""
+    try:
+        async with httpx.AsyncClient(timeout=45.0) as client:
+            response = await client.get(remote_url)
+            response.raise_for_status()
+
+            ext = ".png"
+            remote_lower = remote_url.lower()
+            if ".jpg" in remote_lower or ".jpeg" in remote_lower:
+                ext = ".jpg"
+            elif ".mp4" in remote_lower:
+                ext = ".mp4"
+
+            unique_filename = f"gen_{uuid.uuid4().hex}{ext}"
+            file_path = os.path.join(upload_dir, unique_filename)
+
+            with open(file_path, "wb") as f:
+                f.write(response.content)
+
+            return unique_filename
+
+    except Exception as e:
+        logging.logger.error(f"Failed to download remote asset from {remote_url}: {str(e)}")
+        raise e
+

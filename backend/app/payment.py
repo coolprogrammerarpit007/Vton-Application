@@ -2,16 +2,18 @@ import hashlib
 import time
 import random
 import logging
-from typing import Optional
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
+
 
 from . import models, schemas
 from .database import get_db
 from .config import settings
 from .exceptions import APIException
 from .auth import get_current_user
+
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -53,12 +55,11 @@ def validate_response_hash(data: dict) -> bool:
 async def initiate_payment(
     req: schemas.PaymentInitiateRequest,
     db: Session = Depends(get_db),
-    current_user: Optional[models.User] = Depends(get_current_user)
+    current_user: models.User = Depends(get_current_user)
 ):
     """
     Initiates payment request, records transaction state in DB, and yields PayU payload.
     """
-    
     # 1. Securely fetch plan details from the database
     plan = db.query(models.SubscriptionPlan).filter(
         models.SubscriptionPlan.plan_name == req.plan_name.lower(),
@@ -68,8 +69,7 @@ async def initiate_payment(
     if not plan:
         raise APIException(status_code=400, msg="Invalid or inactive subscription plan selected.")
     
-    
-    # 2. Extract user details safely from the JWT context (Fallback to username if full_name is null)
+    # 2. Extract user details safely from the JWT context
     user_firstname = current_user.full_name or current_user.username
     user_email = current_user.email
     
@@ -79,17 +79,19 @@ async def initiate_payment(
     transaction = models.PaymentTransaction(
         txnid=txnid,
         user_id=current_user.id,
-        amount=plan.price,           # Securely set from DB plan
-        product_info=plan.title,     # Securely set from DB plan
+        amount=plan.price,           
+        product_info=plan.title,     
         firstname=user_firstname,
         email=user_email,
-        phone=req.phone,             # Taken from frontend as phone is not in User model
+        phone=req.phone,             
         status=models.TransactionStatus.PENDING
     )
     db.add(transaction)
     db.commit()
 
-   # 4. Build PayU Payload
+    backend_base = settings.BACKEND_URL.rstrip('/')
+
+    # 4. Build PayU Payload using dynamic backend base URL
     payment_data = {
         "key": settings.PAYU_MERCHANT_KEY,
         "txnid": txnid,
@@ -98,10 +100,10 @@ async def initiate_payment(
         "firstname": user_firstname,
         "email": user_email,
         "phone": req.phone,
-        "surl": f"{settings.BACKEND_URL}/api/payment/callback?type=success", 
-        "furl": f"{settings.BACKEND_URL}/api/payment/callback?type=fail",
+        "surl": f"{backend_base}/api/payment/callback?type=success", 
+        "furl": f"{backend_base}/api/payment/callback?type=fail",
         "udf1": str(transaction.id),
-        "udf2": plan.plan_name, # Pass the plan_name for the callback to read
+        "udf2": plan.plan_name, 
         "udf3": "",
         "udf4": "",
         "udf5": ""
@@ -130,16 +132,18 @@ async def payment_callback(request: Request, db: Session = Depends(get_db)):
     txnid = data_dict.get('txnid', '')
     status = data_dict.get('status', '')
     payu_money_id = data_dict.get('mihpayid', '')
-    purchased_plan_name = data_dict.get('udf2', '') # Retrieve the plan name
+    purchased_plan_name = data_dict.get('udf2', '') 
 
     logger.info(f"PayU Callback received for TxnID: {txnid} | Status: {status}")
+
+    frontend_base = settings.FRONTEND_URL.rstrip('/')
 
     # 1. Locate Transaction Record
     txn = db.query(models.PaymentTransaction).filter(models.PaymentTransaction.txnid == txnid).first()
     if not txn:
         logger.error(f"Callback error: Transaction ID {txnid} not found in DB.")
         return RedirectResponse(
-            url=f"{settings.FRONTEND_URL}/payment-status?status=failed&reason=invalid_txnid",
+            url=f"{frontend_base}/payment-status?status=failed&reason=invalid_txnid",
             status_code=303
         )
 
@@ -153,7 +157,7 @@ async def payment_callback(request: Request, db: Session = Depends(get_db)):
         txn.status = models.TransactionStatus.TAMPERED
         db.commit()
         return RedirectResponse(
-            url=f"{settings.FRONTEND_URL}/payment-status?status=failed&reason=hash_mismatch&txnid={txnid}",
+            url=f"{frontend_base}/payment-status?status=failed&reason=hash_mismatch&txnid={txnid}",
             status_code=303
         )
 
@@ -161,7 +165,6 @@ async def payment_callback(request: Request, db: Session = Depends(get_db)):
     if status == 'success':
         txn.status = models.TransactionStatus.SUCCESS
         
-        # Grant plan and credits to the user dynamically
         if txn.user_id and purchased_plan_name:
             user = db.query(models.User).filter(models.User.id == txn.user_id).first()
             plan = db.query(models.SubscriptionPlan).filter(models.SubscriptionPlan.plan_name == purchased_plan_name).first()
@@ -169,7 +172,6 @@ async def payment_callback(request: Request, db: Session = Depends(get_db)):
             if user and plan:
                 user.plan_name = plan.title 
                 
-                # Ensure the user has a default credit counter before adding
                 if not hasattr(user, 'credits') or user.credits is None:
                     user.credits = 0
                 
@@ -178,13 +180,13 @@ async def payment_callback(request: Request, db: Session = Depends(get_db)):
                 
         db.commit()
         return RedirectResponse(
-            url=f"{settings.FRONTEND_URL}/payment-status?status=success&txnid={txnid}",
+            url=f"{frontend_base}/payment-status?status=success&txnid={txnid}",
             status_code=303
         )
     else:
         txn.status = models.TransactionStatus.FAILED
         db.commit()
         return RedirectResponse(
-            url=f"{settings.FRONTEND_URL}/payment-status?status=failed&txnid={txnid}",
+            url=f"{frontend_base}/payment-status?status=failed&txnid={txnid}",
             status_code=303
         )

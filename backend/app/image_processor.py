@@ -1,35 +1,28 @@
 import cv2
 import mediapipe as mp
-# Explicitly import the pose submodule
-# from mediapipe.python.solutions import pose as mp_pose
 import numpy as np
 import logging
-
 
 logger = logging.getLogger(__name__)
 
 # Initialize MediaPipe Pose engine safely
-
 try:
     mp_pose = mp.solutions.pose
     pose = mp_pose.Pose(
         static_image_mode=True,
-        model_complexity = 1,
+        model_complexity=1,
         enable_segmentation=False,
         min_detection_confidence=0.5
     )
-    
 except Exception as e:
     logger.critical(f"Failed to initialize MediaPipe Pose: {str(e)}")
     raise
-
 
 def get_person_bounding_box(image_rgb):
     """
     Leverages MediaPipe Pose landmarks to calculate a highly precise bounding 
     box containing the complete visible human body (head-to-toe).
     """
-    
     try:
         results = pose.process(image_rgb)
         
@@ -37,7 +30,7 @@ def get_person_bounding_box(image_rgb):
             logger.warning("MediaPipe failed to detect pose landmarks in the provided image.")
             return None
         
-        h,w,_ = image_rgb.shape
+        h, w, _ = image_rgb.shape
         x_coords = []
         y_coords = []
         
@@ -60,8 +53,6 @@ def get_person_bounding_box(image_rgb):
     except Exception as e:
         logger.error(f"Error during landmark detection: {str(e)}", exc_info=True)
         return None
-    
-    
     
 def calculate_ideal_crop(image_shape, human_box, target_ratio_str="9:16", margin_padding=0.15):
     """
@@ -150,4 +141,3 @@ def process_smart_crop(input_path, output_path, target_ratio_str="9:16"):
         raise IOError(f"Failed to save cropped image output asset down to: {output_path}")
         
     return True
-

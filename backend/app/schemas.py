@@ -1,21 +1,15 @@
-from pydantic import BaseModel,EmailStr,Field,field_validator
-from typing   import Any,Optional,List,Dict
-from datetime import datetime
 import re
-from app.models import GarmentCategory, JobStatus,StudioJobType,TicketStatus, TicketPriority
+from datetime import datetime
+from typing import Any, Optional, List, Dict
+from pydantic import BaseModel, EmailStr, Field, field_validator
+from .models import GarmentCategory, JobStatus, StudioJobType, TicketStatus, TicketPriority
 
 # --- User Schemas ---
 class UserCreate(BaseModel):
-    # Enforce minimum and maximum lengths, strip whitespace
     username: str = Field(..., min_length=3, max_length=50, strip_whitespace=True)
-    
-    # EmailStr automatically validates proper email formatting (e.g., user@domain.com)
     email: EmailStr 
-    
-    # Enforce minimum password length
     password: str = Field(..., min_length=8)
 
-    # Optional: Ensure username doesn't contain spaces or weird characters
     @field_validator('username')
     def validate_username(cls, v):
         if not re.match(r"^\w+$", v):
@@ -23,15 +17,71 @@ class UserCreate(BaseModel):
         return v
 
 class UserLogin(BaseModel):
-    # EmailStr guarantees it looks like a real email address
     email: EmailStr 
-    
-    # min_length=1 prevents users from submitting empty strings ("")
     password: str = Field(...)
+    
+    
+class StandardResponse(BaseModel):
+    status: bool
+    msg: str
+    data: Optional[Any] = None
+    class Config:
+        from_attributes = True
+        
+        
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
 
-class Token(BaseModel):
-    access_token: str
-    token_type: str
+class VerifyOTPRequest(BaseModel):
+    email: EmailStr
+    otp: str
+
+class ResetPasswordRequest(BaseModel):
+    email: EmailStr
+    reset_token: str
+    new_password: str
+    
+class GoogleLoginPayload(BaseModel):
+    sub: str
+    name: str
+    given_name: Optional[str] = None
+    picture: Optional[str] = None
+    email: EmailStr
+    email_verified: bool
+    
+    
+    
+# --- Subscription Plans ---
+class SubscriptionPlanResponse(BaseModel):
+    id: int
+    plan_name: str
+    title: str
+    price: str
+    credits: int
+    is_active: bool
+
+    class Config:
+        from_attributes = True
+
+class StandardSubscriptionPlanListResponse(BaseModel):
+    status: bool
+    msg: str
+    data: List[SubscriptionPlanResponse]
+    
+    
+# --- Payment Schemas ---
+class PaymentInitiateRequest(BaseModel):
+    plan_name: str = Field(..., description="E.g., silver, gold, platinum")
+    phone: str = Field(default="9351469994", min_length=10, max_length=15)
+
+class PaymentInitiateResponseData(BaseModel):
+    action_url: str
+    payment_data: Dict[str, Any]
+
+class StandardPaymentResponse(BaseModel):
+    status: bool
+    msg: str
+    data: Optional[PaymentInitiateResponseData] = None
     
     
 class TicketCreate(BaseModel):
@@ -57,7 +107,6 @@ class TicketResponse(BaseModel):
     class Config:
         from_attributes = True
 
-# Assuming you have a StandardResponse schema like in your previous code
 class StandardTicketResponse(BaseModel):
     status: bool
     msg: str
@@ -68,10 +117,10 @@ class StandardTicketListResponse(BaseModel):
     msg: str
     data: List[TicketResponse]
     
-class StandardResponse(BaseModel):
-    status:bool
-    msg:str
-    data:Optional[Any] = None
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+    
     class Config:
         from_attributes = True
 
@@ -93,30 +142,7 @@ class TryOnJobOut(BaseModel):
     class Config:
         from_attributes = True
         
-        
-class ForgotPasswordRequest(BaseModel):
-    email: EmailStr
 
-class VerifyOTPRequest(BaseModel):
-    email: EmailStr
-    otp: str
-
-class ResetPasswordRequest(BaseModel):
-    email: EmailStr
-    reset_token: str
-    new_password: str
-    
-    
-    
-
-class GoogleLoginPayload(BaseModel):
-    sub: str
-    name: str
-    given_name: Optional[str] = None
-    picture: Optional[str] = None
-    email: EmailStr
-    email_verified: bool
-    
     
 class PromptTemplateItem(BaseModel):
     id: int
@@ -132,48 +158,5 @@ class PromptTemplateItem(BaseModel):
 class PromptTemplateResponse(StandardResponse):
     data: List[PromptTemplateItem]
     
-    
-    
-    
-# Subscription Plans
 
-class SubscriptionPlanResponse(BaseModel):
-    id: int
-    plan_name: str
-    title: str
-    price: str
-    credits: int
-    is_active: bool
-
-    class Config:
-        from_attributes = True
-
-class StandardSubscriptionPlanListResponse(BaseModel):
-    status: bool
-    msg: str
-    data: List[SubscriptionPlanResponse]
-    
-    
-# Adding Schema of Payment Transaction
-
-# --- Updated Payment Schemas ---
-
-class PaymentInitiateRequest(BaseModel):
-    # Frontend only sends the plan name and phone number
-    plan_name: str = Field(..., description="E.g., silver, gold, platinum")
-    phone: str = Field(default="9351469994", min_length=10, max_length=15)
-
-class PaymentInitiateResponseData(BaseModel):
-    action_url: str
-    payment_data: Dict[str, Any]
-
-class StandardPaymentResponse(BaseModel):
-    status: bool
-    msg: str
-    data: Optional[PaymentInitiateResponseData] = None
-    
-    
-
-    
-    
     

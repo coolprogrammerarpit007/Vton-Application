@@ -1,17 +1,19 @@
+import json
 import logging
 import asyncio
-import json
+from typing import Optional, Dict
+
 from fastapi import APIRouter, Depends, Form, File, UploadFile, BackgroundTasks
 from sqlalchemy.orm import Session
-from typing import Optional, Dict, List
 
 from app import models
 from app.database import get_db, SessionLocal
 from app.auth import get_current_user
-from app.utils import save_upload_file
+from app.utils import save_upload_file,download_and_save_remote_image
 from app.fashn_service import trigger_vton_job, check_vton_status
 from app.schemas import StandardResponse
 from app.exceptions import APIException
+from app.config import settings  # ADDED: Centralized config import
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +21,7 @@ router = APIRouter(prefix="/api/360", tags=["360 View Generator"])
 
 async def process_dynamic_generation_chain(
     job_id: int,
-    person_urls: Dict[str, str],  # Example: {"front": "url1", "back": "url2"}
+    person_urls: Dict[str, str],  
     garment_url: str,
     category: models.GarmentCategory,
     garment_desc: Optional[str],
@@ -33,6 +35,7 @@ async def process_dynamic_generation_chain(
     3. Saves the final URLs back to the database.
     """
     db = SessionLocal()
+    base_url = settings.BACKEND_URL.rstrip("/")
     try:
         db_job = db.query(models.TryOnJob).filter(models.TryOnJob.id == job_id).first()
         if not db_job:
@@ -81,7 +84,7 @@ async def process_dynamic_generation_chain(
         db_job.fashn_job_id = json.dumps(position_fashn_ids)
         db.commit()
 
-        # 2. Polling loop (Checking all FASHN jobs simultaneously)
+        # 2. Polling loop
         completed_results: Dict[str, str] = {}
         pending_positions = dict(position_fashn_ids)
         max_polls, poll_count = 60, 0
@@ -95,16 +98,14 @@ async def process_dynamic_generation_chain(
             statuses = await asyncio.gather(*check_tasks, return_exceptions=True)
 
             for (pos, f_id), res in zip(positions_to_check, statuses):
-                if isinstance(res, Exception):
-                    continue
-
+                if isinstance(res, Exception): continue
                 status, output = res
                 if status == "completed":
-                    result_url = output[0] if isinstance(output, list) else output
-                    completed_results[pos] = result_url
+                    remote_url = output[0] if isinstance(output, list) else output
+                    local_filename = await download_and_save_remote_image(remote_url)
+                    completed_results[pos] = f"{base_url}/static_uploads/{local_filename}"
                     del pending_positions[pos]
                 elif status == "failed":
-                    logger.error(f"[360 WORKER] {pos} failed on FASHN side.")
                     db_job.status = models.JobStatus.FAILED
                     db.commit()
                     return
@@ -129,9 +130,6 @@ async def process_dynamic_generation_chain(
         db.close()
         
         
-        
-        
-        
 @router.post("/generate", response_model=StandardResponse)
 async def create_360_job(
     background_tasks: BackgroundTasks,
@@ -140,11 +138,9 @@ async def create_360_job(
     resolution: str = Form("1k"),
     output_format: str = Form("png"),
 
-    ## --- GARMENT SOURCES (Upload OR Closet) ---
     garment_image: Optional[UploadFile] = File(None),
     closet_item_id: Optional[int] = Form(None),
 
-    # OPTIONAL: Person Images per angle
     person_image_front: Optional[UploadFile] = File(None),
     person_image_back: Optional[UploadFile] = File(None),
     person_image_side: Optional[UploadFile] = File(None),
@@ -152,10 +148,11 @@ async def create_360_job(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    base_url = "https://vton-backend.falcondetectives.com"
+    # UPDATED: Pulling dynamic base URL from settings
+    base_url = settings.BACKEND_URL.rstrip("/")
 
     try:
-        # 1. Resolve Garment Source (Closet vs Raw Upload)
+        # 1. Resolve Garment Source
         if closet_item_id:
             item = db.query(models.ClosetItem).filter(
                 models.ClosetItem.id == closet_item_id,
@@ -179,7 +176,7 @@ async def create_360_job(
             raise APIException(status_code=400, msg="Must provide either a garment_image upload or a valid closet_item_id.")
 
 
-        # 2. Process whichever person angles were uploaded
+        # 2. Process person angles
         person_urls: Dict[str, str] = {}
         
         angle_uploads = {
@@ -196,7 +193,6 @@ async def create_360_job(
                 filename = save_upload_file(file_obj)
                 person_urls[pos] = f"{base_url}/static_uploads/{filename}"
 
-        # Ensure the user uploaded at least one person image
         if not person_urls:
             raise APIException(status_code=400, msg="You must upload at least one person image (front, back, or side).")
 
@@ -204,7 +200,7 @@ async def create_360_job(
         db_job = models.TryOnJob(
             user_id=current_user.id,
             category=category,
-            user_image_url=list(person_urls.values())[0], # Just saving the first one for DB reference
+            user_image_url=list(person_urls.values())[0], 
             garment_image_url=garment_url,
             status=models.JobStatus.PENDING
         )

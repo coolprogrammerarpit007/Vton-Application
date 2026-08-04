@@ -1,86 +1,67 @@
+import os
 import secrets
 import random
 import smtplib
-from email.message import EmailMessage
-from fastapi import APIRouter, Depends, status
-from pydantic import EmailStr
-from sqlalchemy.orm import Session
-# from google.oauth2 import id_token
-# from google.auth.transport import requests
-from datetime import datetime, timedelta
-
-# Import your database models and session dependency
-from . import models
-from .schemas import (
-    UserCreate, UserLogin, StandardResponse,
-    ForgotPasswordRequest, VerifyOTPRequest, ResetPasswordRequest,GoogleLoginPayload
-)
-from .database import get_db
-from app.exceptions import APIException
-
-import os
-from dotenv import load_dotenv
 import logging
+from pydantic import EmailStr
+from datetime import datetime, timedelta
+from email.message import EmailMessage
 from logging.handlers import TimedRotatingFileHandler
+
+from dotenv import load_dotenv
+from fastapi import APIRouter, Depends, status
 from fastapi.security import OAuth2PasswordBearer
+from sqlalchemy.orm import Session
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 
-
-
-# --- Logging Configuration (Daily Rotating) ---
-# 1. Ensure a 'logs' directory exists on your server
-os.makedirs("logs", exist_ok=True)
-
-# 2. Set up the logger
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO) # Set base level to INFO
-
-# Prevent adding handlers multiple times if the module reloads
-if not logger.handlers:
-    # 3. Create the log format
-    formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-
-    # 4. Console Handler (Keeps logs visible in your terminal / systemctl status)
-    console_handler = logging.StreamHandler()
-    console_handler.setFormatter(formatter)
-
-    # 5. Daily File Handler (Generates date-wise logs)
-    # This writes to logs/auth.log today, then renames it to auth.log.YYYY-MM-DD at midnight
-    file_handler = TimedRotatingFileHandler(
-        filename="logs/auth.log",
-        when="midnight",    # Rotate the file every night at midnight
-        interval=1,         # Every 1 day
-        backupCount=30,     # Keep the last 30 days of logs, delete older ones automatically
-        encoding="utf-8"
-    )
-    file_handler.setFormatter(formatter)
-
-    # 6. Attach both handlers to your logger
-    logger.addHandler(console_handler)
-    logger.addHandler(file_handler)
+# Import your database models, schemas, configs, and session dependency
+from . import models
+from .schemas import (
+    UserCreate, UserLogin, StandardResponse,
+    ForgotPasswordRequest, VerifyOTPRequest, ResetPasswordRequest, GoogleLoginPayload
+)
+from .database import get_db
+from .config import settings  # ADDED: Import settings for dynamic backend URL
+from app.exceptions import APIException
 
 # --- Security Configuration ---
-# Load environment variables from your .env file
 load_dotenv() 
 
 SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 if not SECRET_KEY:
-    logger.critical("Failed to start: JWT_SECRET_KEY is missing from .env file!")
     raise ValueError("No JWT_SECRET_KEY set in .env file")
 
-
-GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7 # 7 Days
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-router = APIRouter(prefix="/api/auth")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/auth/login")
 
-# --- Pydantic Schemas ---
+router = APIRouter(prefix="/api/auth", tags=["Auth"])
 
+# --- Logging Configuration (Daily Rotating) ---
+os.makedirs("logs", exist_ok=True)
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+if not logger.handlers:
+    formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
     
+    file_handler = TimedRotatingFileHandler(
+        filename="logs/auth.log",
+        when="midnight",    
+        interval=1,         
+        backupCount=30,     
+        encoding="utf-8"
+    )
+    file_handler.setFormatter(formatter)
+    
+    logger.addHandler(console_handler)
+    logger.addHandler(file_handler)
+
 
 # --- Utility Functions ---
 def verify_password(plain_password, hashed_password):
@@ -99,14 +80,12 @@ def create_access_token(data: dict):
 
 # --- Route Protection Dependency ---
 def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
-    # Initialize the custom exception using 'msg'
     credentials_exception = APIException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         msg="Could not validate credentials"
     )
     
     try:
-        # 1. Decode the token
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         user_id: str = payload.get("sub")
         
@@ -118,7 +97,6 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         logger.warning(f"Token validation failed: JWT decoding error ({str(e)})")
         raise credentials_exception
         
-    # 2. Grab the user from the database
     user = db.query(models.User).filter(models.User.id == int(user_id)).first()
     
     if user is None:
@@ -130,19 +108,17 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
 
 # --- API Routes ---
 
-# Move response_model up into the route decorator
 @router.get("/me", response_model=StandardResponse)
 def get_me(current_user: models.User = Depends(get_current_user)):
     return StandardResponse(
         status=True,
         msg="User details fetched successfully!",
         data={
+            "user_id":current_user.id,
            "username": current_user.username, 
            "email": current_user.email
         }
     )
-    
-    
 
 
 @router.post("/login", response_model=StandardResponse)
@@ -163,7 +139,6 @@ def login_user(user: UserLogin, db: Session = Depends(get_db)):
         logger.info(f"User logged in successfully: {db_user.username} (ID: {db_user.id})")
         access_token = create_access_token(data={"sub": str(db_user.id)})
         
-        # CHANGED: Added user details to the response data payload
         return StandardResponse(
             status=True,
             msg="User logged in successfully",
@@ -189,18 +164,15 @@ def login_user(user: UserLogin, db: Session = Depends(get_db)):
 def register_user(user: UserCreate, db: Session = Depends(get_db)):
     logger.info(f"Registration attempt for email: {user.email}")
     
-    # 1. Business Logic Validation: Check if email exists
     db_user = db.query(models.User).filter(models.User.email == user.email).first()
     if db_user:
         logger.warning(f"Registration failed: Email {user.email} is already registered")
         raise APIException(status_code=400, msg="Email is already registered")
     
     try:
-        # 2. Tech Logic Validation: Bcrypt 72-byte limit
         if len(user.password.encode("utf-8")) > 72:
             raise APIException(status_code=400, msg="Password is too long (max 72 characters)")
 
-        # 3. Create User
         hashed_pw = get_password_hash(user.password)
         new_user = models.User(
             username=user.username,
@@ -214,7 +186,6 @@ def register_user(user: UserCreate, db: Session = Depends(get_db)):
         logger.info(f"User registered successfully: {new_user.username} (ID: {new_user.id})")
         access_token = create_access_token(data={"sub": str(new_user.id)})
         
-       # CHANGED: Added user details to the response data payload
         return StandardResponse(
             status=True,
             msg="New User Registered successfully",
@@ -230,54 +201,42 @@ def register_user(user: UserCreate, db: Session = Depends(get_db)):
         )
         
     except APIException:
-        #THIS: Let our custom exceptions pass through untouched
         raise
-        
-    
     except Exception as e:
         logger.error(f"Error during user registration for {user.email}: {str(e)}")
         db.rollback()
         raise APIException(status_code=500, msg="Internal server error during registration")
     
     
-    
-    
 @router.post("/login-via-google", response_model=StandardResponse)
 def google_auth_login(payload: GoogleLoginPayload, db: Session = Depends(get_db)):
     try:
-        # 1. Validate payload basics
         if not payload.email or not payload.email_verified:
             raise APIException(status_code=200, msg="Unverified or missing Google email address.")
         if not payload.sub:
             raise APIException(status_code=200, msg="Missing Google security identifier (sub).")
 
-        # 2. Primary Verification: Check if user exists by their unique Google 'sub'
         db_user = db.query(models.User).filter(models.User.google_sub == payload.sub).first()
 
         if not db_user:
-            # Fallback Verification: Check if they previously registered with this email
             db_user = db.query(models.User).filter(models.User.email == payload.email).first()
             
             if db_user:
-                # Link the Google 'sub' to their existing account
                 db_user.google_sub = payload.sub
                 db_user.auth_provider = "google"
                 
-                # Optional: If they don't have an avatar yet, use their Google picture
                 if not getattr(db_user, 'avatar_url', None) and payload.picture:
                     db_user.avatar_url = payload.picture
-                    
                     
                 db.commit()
                 logger.info(f"Linked Google sub to existing user: {db_user.email} (ID: {db_user.id})")
             else:
-                # Register a completely new user
                 db_user = models.User(
                     username=payload.name,
                     email=payload.email,
                     hashed_password=None,
                     auth_provider="google",
-                    google_sub=payload.sub,  # Store the secure sub here,
+                    google_sub=payload.sub,  
                     avatar_url=payload.picture
                 )
                 db.add(db_user)
@@ -285,24 +244,19 @@ def google_auth_login(payload: GoogleLoginPayload, db: Session = Depends(get_db)
                 db.refresh(db_user)
                 logger.info(f"New user registered via Google sub: {db_user.email} (ID: {db_user.id})")
         else:
-            # User verified successfully via 'sub'
             logger.info(f"Existing user logged in via Google sub: {db_user.email} (ID: {db_user.id})")
-            
-            # NEW FIX: If the existing user has a NULL avatar in the database, update it now
             if not getattr(db_user, 'avatar_url', None) and payload.picture:
                 db_user.avatar_url = payload.picture
                 db.commit()
                 db.refresh(db_user)
                 logger.info(f"Updated missing avatar_url for existing user: {db_user.email}")
 
-        # 3. Issue your system's standard JWT Access Token
         access_token = create_access_token(data={"sub": str(db_user.id)})
-        
-        # Format the avatar URL if it is a local upload path
         avatar_path = getattr(db_user, 'avatar_url', None)
-        base_url = "https://vton-backend.falcondetectives.com"
         
-        # If the database stores a relative path like "static_uploads/avatars/..." we convert it to an absolute URL
+        # UPDATED: Pull the base URL dynamically from config instead of a hardcoded string
+        base_url = settings.BACKEND_URL.rstrip("/")
+        
         if avatar_path and not avatar_path.startswith("http"):
             avatar_path = f"{base_url}/{avatar_path}"
         
@@ -343,37 +297,23 @@ def logout_user(current_user: models.User = Depends(get_current_user)):
         )
         
     except Exception as e:
-        # Catch unexpected server errors (e.g., if your logger fails or a DB connection drops)
         logger.error(f"Critical error during logout for user {current_user.id}: {str(e)}")
         raise APIException(status_code=500, msg="Internal server error during logout.")
-    
-    
-    
-    
-    
-    
-    
-# *************************************  API development for the forgot password ****************
 
-# Helper function for OTP and Email
+
+# --- Password Reset Flow ---
 
 def generate_otp() -> str:
     """Generates a secure 6-digit numeric OTP."""
     return f"{random.randint(100000, 999999)}"
 
-
 def send_otp_email(to_email: str, otp: str):
-    """
-    Sends the OTP via SMTP. Configure these ENV variables in your .env file:
-    SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, MAIL_FROM
-    """
     smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
     smtp_port = int(os.getenv("SMTP_PORT", 587))
     smtp_user = os.getenv("SMTP_USER")
     smtp_password = os.getenv("SMTP_PASSWORD")
     mail_from = os.getenv("MAIL_FROM", smtp_user)
 
-    # If SMTP is not configured in development, log the OTP for testing
     if not smtp_user or not smtp_password:
         logger.warning(f"[DEV MODE] SMTP credentials missing. Generated OTP for {to_email}: {otp}")
         return
@@ -400,28 +340,21 @@ def send_otp_email(to_email: str, otp: str):
         raise APIException(status_code=500, msg="Failed to send OTP email. Please try again later.")
     
     
-    
-# ==========================================
-# 1. FORGOT PASSWORD API
-# ==========================================
 @router.post("/forgot-password", response_model=StandardResponse)
 def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db)):
     logger.info(f"Password reset requested for email: {payload.email}")
 
-    # 1. Verify user exists
     user = db.query(models.User).filter(models.User.email == payload.email).first()
     if not user:
         logger.warning(f"Forgot password attempt for non-existent email: {payload.email}")
         raise APIException(status_code=200, msg="No account found with this email address.")
 
     try:
-        # 2. Invalidate any existing unused OTPs for this user
         db.query(models.PasswordResetOTP).filter(
             models.PasswordResetOTP.user_id == user.id,
             models.PasswordResetOTP.is_used == False
         ).update({"is_used": True})
 
-        # 3. Generate new OTP (Expires in 10 Minutes)
         otp_code = generate_otp()
         expiry_time = datetime.utcnow() + timedelta(minutes=10)
 
@@ -434,7 +367,6 @@ def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db
         db.add(otp_record)
         db.commit()
 
-        # 4. Dispatch Email
         send_otp_email(to_email=user.email, otp=otp_code)
 
         return StandardResponse(
@@ -451,10 +383,6 @@ def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db
         raise APIException(status_code=500, msg="Internal server error generating reset token.")
     
     
-    
-# ==========================================
-# 2. VERIFY OTP API
-# ==========================================
 @router.post("/verify-otp", response_model=StandardResponse)
 def verify_otp(payload: VerifyOTPRequest, db: Session = Depends(get_db)):
     logger.info(f"Verifying password reset OTP for email: {payload.email}")
@@ -463,7 +391,6 @@ def verify_otp(payload: VerifyOTPRequest, db: Session = Depends(get_db)):
     if not user:
         raise APIException(status_code=404, msg="User not found.")
 
-    # Fetch latest active OTP record
     otp_record = db.query(models.PasswordResetOTP).filter(
         models.PasswordResetOTP.user_id == user.id,
         models.PasswordResetOTP.otp == payload.otp,
@@ -479,10 +406,8 @@ def verify_otp(payload: VerifyOTPRequest, db: Session = Depends(get_db)):
         raise APIException(status_code=400, msg="OTP code has expired. Please request a new one.")
 
     try:
-        # Generate a secure single-use reset token for step 3
         reset_token = secrets.token_urlsafe(32)
         
-        # Mark OTP as verified and store reset_token
         otp_record.is_used = True
         otp_record.reset_token = reset_token
         db.commit()
@@ -504,10 +429,6 @@ def verify_otp(payload: VerifyOTPRequest, db: Session = Depends(get_db)):
         raise APIException(status_code=500, msg="Internal server error verifying OTP.")
     
     
-    
-# ==========================================
-# 3. RESET PASSWORD API
-# ==========================================
 @router.post("/reset-password", response_model=StandardResponse)
 def reset_password(payload: ResetPasswordRequest, db: Session = Depends(get_db)):
     logger.info(f"Resetting password for email: {payload.email}")
@@ -516,7 +437,6 @@ def reset_password(payload: ResetPasswordRequest, db: Session = Depends(get_db))
     if not user:
         raise APIException(status_code=404, msg="User not found.")
 
-    # Validate reset token
     token_record = db.query(models.PasswordResetOTP).filter(
         models.PasswordResetOTP.user_id == user.id,
         models.PasswordResetOTP.reset_token == payload.reset_token,
@@ -527,19 +447,14 @@ def reset_password(payload: ResetPasswordRequest, db: Session = Depends(get_db))
         logger.warning(f"Reset password failed for {payload.email}: Invalid or reused reset token")
         raise APIException(status_code=400, msg="Invalid or expired reset token.")
 
-    # Enforce 15-minute validity window for password reset after verification
     if datetime.utcnow() > token_record.expires_at + timedelta(minutes=15):
         raise APIException(status_code=400, msg="Reset session expired. Please restart the process.")
 
     try:
-        # Tech Logic Validation: Bcrypt 72-byte limit
         if len(payload.new_password.encode("utf-8")) > 72:
             raise APIException(status_code=400, msg="Password is too long (max 72 characters)")
 
-        # Hash new password & update
         user.hashed_password = get_password_hash(payload.new_password)
-        
-        # Invalidate reset token so it cannot be used again
         token_record.reset_token = None
         db.commit()
 

@@ -1,17 +1,12 @@
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from typing import Optional
 
-from . import models,schemas
+from . import models, schemas
 from .database import get_db
 from .auth import get_current_user
 
-
-router = APIRouter(
-    prefix="/api/support",
-    tags=["Support"]
-)
-
+router = APIRouter(prefix="/api/support", tags=["Support"])
 
 # ==========================================
 # 1. CREATE COMPLAINT / TICKET (User)
@@ -53,11 +48,6 @@ def get_tickets(
 ):
     try:
         query = db.query(models.SupportTicket)
-        
-        # If the user is NOT an admin, only show their own tickets
-        # (Assuming your User model has an 'is_admin' or 'role' attribute)
-        # if not getattr(current_user, "is_admin", False):
-        #     query = query.filter(models.SupportTicket.user_id == current_user.id)
             
         if status_filter:
             query = query.filter(models.SupportTicket.status == status_filter)
@@ -82,10 +72,6 @@ def update_ticket_status(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    # # Enforce Admin Access
-    # if not getattr(current_user, "is_admin", False):
-    #     raise HTTPException(status_code=403, detail="Not authorized to perform this action.")
-        
     try:
         ticket = db.query(models.SupportTicket).filter(models.SupportTicket.id == ticket_id).first()
         if not ticket:

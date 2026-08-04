@@ -11,12 +11,11 @@ from .schemas import StandardResponse
 from .exceptions import APIException
 from .utils import save_upload_file
 from .image_processor import process_smart_crop
+from .config import settings  # ADDED: Centralized config import
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/utils", tags=["Image Utilities"])
 
-# Consistent application path context matching main configurations
-BASE_URL = "https://vton-backend.falcondetectives.com"
 UPLOAD_DIR = "static_uploads"
 
 # Ensure runtime save targets exist safely on startup
@@ -33,7 +32,7 @@ async def api_smart_crop(
     Standalone API utility to intelligently re-adjust incoming image dimensions 
     via real-time content mapping without degrading the underlying image ratio.
     """
-    logger.info(f"User {current_user.id} initiated smart crop command with desired target ratio: {target_ratio}")
+    logger.info(f"User {current_user.id} initiated smart crop command with target ratio: {target_ratio}")
     
     if not image.content_type.startswith("image/"):
         raise APIException(status_code=400, msg="Provided payload asset must be a valid image type.")
@@ -51,9 +50,10 @@ async def api_smart_crop(
         # 3. Hand processing over to the Computer Vision Engine
         process_smart_crop(original_path, cropped_path, target_ratio)
         
-        # 4. Construct production endpoints URLs
-        original_url = f"{BASE_URL}/static_uploads/{original_filename}"
-        cropped_url = f"{BASE_URL}/static_uploads/{cropped_filename}"
+        # 4. Construct production endpoints URLs dynamically
+        base_url = settings.BACKEND_URL.rstrip("/")
+        original_url = f"{base_url}/static_uploads/{original_filename}"
+        cropped_url = f"{base_url}/static_uploads/{cropped_filename}"
         
         return StandardResponse(
             status=True,

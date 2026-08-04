@@ -1,116 +1,93 @@
-from fastapi import APIRouter, Depends, UploadFile, File, Form, Request
-from sqlalchemy.orm import Session
-from typing import List
-
 import os
 import uuid
 import logging
+from typing import List
 from logging.handlers import TimedRotatingFileHandler
 
+from fastapi import APIRouter, Depends, UploadFile, File, Form
+from fastapi.concurrency import run_in_threadpool
+from sqlalchemy.orm import Session
+import shutil
+
+# Import your database models, schemas, configs, and session dependency
 from . import models
 from .database import get_db
 from .schemas import StandardResponse
 from .auth import get_current_user
+from .config import settings  # ADDED: Import settings for dynamic backend URL
 from app.exceptions import APIException
 
-# --- Logging Configuration (Daily Rotating) ---
-os.makedirs("logs", exist_ok=True)
-logger = logging.getLogger("closet_logger")
-logger.setLevel(logging.INFO)
-
-if not logger.handlers:
-    formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-    
-    console_handler = logging.StreamHandler()
-    console_handler.setFormatter(formatter)
-    
-    file_handler = TimedRotatingFileHandler(
-        filename="logs/closet.log",
-        when="midnight",
-        interval=1,
-        backupCount=30,
-        encoding="utf-8"
-    )
-    file_handler.setFormatter(formatter)
-    
-    logger.addHandler(console_handler)
-    logger.addHandler(file_handler)
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/closet", tags=["Closet"])
 
 UPLOAD_DIR = "static_uploads/closet"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-MAX_FILE_SIZE = 2 * 1024 * 1024  # 2 Megabytes
+MAX_FILE_SIZE = 1 * 1024 * 1024  # 2 Megabytes
+
+
+# A synchronous helper function designed to be run in a threadpool
+def write_file_to_disk(upload_file: UploadFile, dest_path: str):
+    with open(dest_path, "wb") as buffer:
+        shutil.copyfileobj(upload_file.file, buffer)
 
 @router.post("/upload", response_model=StandardResponse)
 async def upload_closet_item(
-    category: str = Form("tops"),
-    wear_category: str = Form(...),  # REQUIRED: "mens", "women", or "kids"
+    category: models.GarmentCategory = Form(models.GarmentCategory.TOPS),
+    wear_category: models.WearCategory = Form(...), 
     label: str = Form("My Garment"),
-    files: List[UploadFile] = File(...),  # ACCEPTS MULTIPLE FILES
+    files: List[UploadFile] = File(...),
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
     logger.info(f"Batch closet upload attempt by user ID: {current_user.id} | Items: {len(files)}")
     
-    # --- 1. VALIDATE ENUMS ---
-    try:
-        validated_category = models.GarmentCategory(category.lower())
-    except ValueError:
-        raise APIException(status_code=400, msg=f"Invalid category: {category}. Allowed: tops, bottoms, one-pieces.")
-        
-    try:
-        validated_wear = models.WearCategory(wear_category.lower())
-    except ValueError:
-        raise APIException(status_code=400, msg=f"Invalid wear_category: {wear_category}. Allowed: mens, women, kids.")
-
-    # --- 2. VALIDATE ALL FILES (Two-Pass System for Safety) ---
-    valid_files_data = []
-    
+    # --- 1. VALIDATE ALL FILES (Memory-Safe Pass) ---
     for file in files:
         if not file.content_type.startswith("image/"):
             logger.warning(f"Invalid file type uploaded by user {current_user.id}: {file.content_type}")
             raise APIException(status_code=400, msg=f"Invalid format for {file.filename}. Images only.")
         
-        file_content = await file.read()
-        if len(file_content) > MAX_FILE_SIZE:
+        # Check size safely without loading the whole file into RAM
+        file.file.seek(0, 2)  # Move to the end of the file
+        file_size = file.file.tell()  # Get the cursor position (file size)
+        file.file.seek(0)  # Reset cursor back to the beginning for saving
+        
+        if file_size > MAX_FILE_SIZE:
             logger.warning(f"File size exceeded for {file.filename} by user {current_user.id}")
-            raise APIException(status_code=400, msg=f"File '{file.filename}' exceeds the 2MB size limit.")
-            
-        valid_files_data.append((file.filename, file_content))
+            raise APIException(status_code=400, msg=f"File '{file.filename}' exceeds the 1MB size limit.")
 
-    # --- 3. SAVE TO DISK & DATABASE ---
+    # --- 2. SAVE TO DISK & DATABASE ---
     uploaded_items_info = []
+    
     try:
-        for idx, (original_name, content) in enumerate(valid_files_data):
-            # Save file locally
-            file_ext = original_name.split(".")[-1]
-            filename = f"{uuid.uuid4().hex}.{file_ext}"
+        for idx, file in enumerate(files):
+            # Safe extension extraction
+            ext = os.path.splitext(file.filename)[1] 
+            filename = f"{uuid.uuid4().hex}{ext}"
             path = os.path.join(UPLOAD_DIR, filename)
             
-            with open(path, "wb") as buffer:
-                buffer.write(content)
+            # Offload the blocking write operation to a background thread
+            await run_in_threadpool(write_file_to_disk, file, path)
             
-            # Dynamic Labeling (e.g. "My Garment - 1" if multiple files are uploaded)
-            item_label = label if len(valid_files_data) == 1 else f"{label} - {idx + 1}"
+            item_label = label if len(files) == 1 else f"{label} - {idx + 1}"
             
-            # Save to Database
             new_item = models.ClosetItem(
                 user_id=current_user.id,
                 file_path=path,
                 label=item_label,
-                category=validated_category.value,
-                wear_category=validated_wear.value
+                category=category.value,
+                wear_category=wear_category.value
             )
             db.add(new_item)
-            db.flush()  # Generates the ID without committing the transaction yet
+            db.flush()  
             
             uploaded_items_info.append({
                 "closet_id": new_item.id,
                 "label": item_label
             })
             
-        db.commit() # Commit all entries at once
+        db.commit() 
         logger.info(f"Successfully uploaded {len(uploaded_items_info)} closet items for user {current_user.id}")
         
         return StandardResponse(
@@ -118,8 +95,8 @@ async def upload_closet_item(
             msg=f"{len(uploaded_items_info)} garment(s) uploaded to closet successfully",
             data={
                 "user_id": current_user.id,
-                "category": validated_category.value,
-                "wear_category": validated_wear.value,
+                "category": category.value,
+                "wear_category": wear_category.value,
                 "items": uploaded_items_info
             }
         )
@@ -132,7 +109,6 @@ async def upload_closet_item(
 
 @router.get("/", response_model=StandardResponse)
 def get_closet_items(
-    request: Request,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
@@ -140,7 +116,8 @@ def get_closet_items(
     
     try:
         items = db.query(models.ClosetItem).filter(models.ClosetItem.user_id == current_user.id).all()
-        base_url = str(request.base_url).rstrip("/")
+        
+        base_url = settings.BACKEND_URL.rstrip("/")
         
         results = []
         for item in items:

@@ -1,7 +1,8 @@
+import json
+from typing import Optional
+
 from fastapi import APIRouter, Query, Depends
 from sqlalchemy.orm import Session
-from typing import Optional
-import json
 
 from . import models
 from .database import get_db
@@ -37,14 +38,12 @@ async def get_user_generations(
             tryon_jobs = tryon_query.order_by(models.TryOnJob.id.desc()).all()
             
             for job in tryon_jobs:
-                # Handle JSON extraction safely for result_image_urls
                 urls = []
                 if job.result_image_urls:
                     urls = job.result_image_urls if isinstance(job.result_image_urls, list) else json.loads(job.result_image_urls)
                 
                 combined_results.append({
                     "job_id": job.id,
-                    # Note: TryOn and 360 share this table, so we classify them broadly here
                     "job_type": models.MasterModuleType.TRYON.value, 
                     "status": job.status.value if hasattr(job.status, 'value') else job.status,
                     "fashn_job_id": job.fashn_job_id,
@@ -54,7 +53,6 @@ async def get_user_generations(
                         "model_url": job.user_image_url
                     },
                     "generated_image_urls": urls,
-                    # Fallback to empty string if missing to prevent sorting crashes
                     "created_at": job.created_at.isoformat() if getattr(job, 'created_at', None) else ""
                 })
 
@@ -67,7 +65,6 @@ async def get_user_generations(
             outfit_jobs = outfit_query.order_by(models.OutfitJob.id.desc()).all()
             
             for job in outfit_jobs:
-                # Outfit jobs use a single string column for the result
                 urls = [job.result_image_url] if job.result_image_url else []
                 
                 combined_results.append({
@@ -80,17 +77,13 @@ async def get_user_generations(
                         "model_url": job.person_image_url
                     },
                     "generated_image_urls": urls,
-                    # OutfitJob schema lacks created_at, defaulting to empty string
                     "created_at": "" 
                 })
 
         # ---------------------------------------------------------
         # 3. SORT & PAGINATE IN PYTHON
         # ---------------------------------------------------------
-        # Sort by Job ID descending (Newest first) since OutfitJob lacks timestamps
         combined_results.sort(key=lambda x: x["job_id"], reverse=True)
-        
-        # Apply standard skip/limit pagination logic
         paginated_results = combined_results[skip : skip + limit]
 
         return StandardResponse(

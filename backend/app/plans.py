@@ -1,11 +1,10 @@
-# app/plans.py
 import logging
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app import models, schemas
-from app.database import get_db
-from app.exceptions import APIException
+from . import models, schemas
+from .database import get_db
+from .exceptions import APIException
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +43,6 @@ async def get_subscription_plan_by_name(plan_name: str, db: Session = Depends(ge
     if not plan:
         raise APIException(status_code=404, msg="Subscription plan not found.")
 
-    
     plan_dict = {
         "id": plan.id,
         "plan_name": plan.plan_name,
