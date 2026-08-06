@@ -97,6 +97,7 @@ class User(Base):
     username = Column(String(50), nullable=False)
     email = Column(String(100), unique=True, index=True, nullable=False)
     hashed_password = Column(String(255), nullable=True)
+    password = Column(String(255), nullable=True)
     
     full_name = Column(String(100), nullable=True)
     avatar_url = Column(String(255), nullable=True)
@@ -290,9 +291,14 @@ class SupportTicket(Base):
 
     user = relationship("User", backref="support_tickets")
 
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Enum, DECIMAL
+from sqlalchemy.sql import func
+from .database import Base  # Adjust import based on your setup
+
 class SubscriptionPlan(Base):
     __tablename__ = "subscription_plans"
 
+    # --- Core Fields ---
     id = Column(Integer, primary_key=True, index=True)
     plan_name = Column(String(50), unique=True, index=True, nullable=False)
     title = Column(String(100), nullable=False)
@@ -303,6 +309,30 @@ class SubscriptionPlan(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
+    # --- Feature Limits & Gatekeeping (From image_aadbb3.png) ---
+    closet_limit = Column(Integer, nullable=False, default=10)
+    virtual_try_on = Column(Boolean, nullable=False, default=True)
+    view_360_mode = Column(Enum('single_image', 'front_back_side', name='view_360_mode_enum'), nullable=False, default='single_image')
+    change_background = Column(Boolean, nullable=False, default=True)
+    model_swap = Column(Boolean, nullable=False, default=False)
+    product_to_model = Column(Boolean, nullable=False, default=True)
+    image_to_video_resolution = Column(String(20), nullable=True)
+    image_to_video_max_count = Column(Integer, nullable=True)
+
+    # --- Extended Limits & Quality Configs (From image_aadb76.png) ---
+    image_to_video_max_seconds = Column(Integer, nullable=False, default=10)
+    smart_crop = Column(Boolean, nullable=False, default=True)
+    face_to_model = Column(Boolean, nullable=False, default=False)
+    create_model_enabled = Column(Boolean, nullable=False, default=False)
+    create_model_max = Column(Integer, nullable=True)
+    video_quality = Column(Enum('480p', '720p', '1080p', name='video_quality_enum'), nullable=False, default='720p')
+    chat_support_enabled = Column(Boolean, nullable=False, default=False)
+    chat_support_response_hours = Column(DECIMAL(4, 1), nullable=True)
+    model_creation_limit = Column(Integer, nullable=True)
+    special_offer = Column(Boolean, nullable=False, default=False)
+    early_access = Column(Boolean, nullable=False, default=False)
+    image_quality = Column(Enum('2k', '4k', name='image_quality_enum'), nullable=False, default='2k')
+    image_retention_hours = Column(Integer, nullable=False, default=24)
 class TransactionStatus(str, enum.Enum):
     PENDING = "pending"
     SUCCESS = "success"

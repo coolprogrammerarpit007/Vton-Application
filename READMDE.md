@@ -114,7 +114,7 @@ Environment="PATH=/var/www/vton-app/backend/.venv/bin"
 Environment="MALLOC_ARENA_MAX=2"  # Prevents Python RAM fragmentation
 
 # Starts Gunicorn with 4 workers. Restarts workers every 1000 requests to clear RAM.
-ExecStart=/var/www/vton-app/backend/.venv/bin/gunicorn app.main:app --workers 4 --worker-class uvicorn.workers.UvicornWorker --bind 127.0.0.1:8000 --max-requests 1000 --max-requests-jitter 50
+gunicorn -k uvicorn.workers.UvicornWorker app.main:app --workers 4 --bind 0.0.0.0:8000
 
 # Strict RAM limits
 MemoryHigh=1.2G

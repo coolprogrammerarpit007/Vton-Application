@@ -176,8 +176,10 @@ def register_user(user: UserCreate, db: Session = Depends(get_db)):
         hashed_pw = get_password_hash(user.password)
         new_user = models.User(
             username=user.username,
+            full_name=user.username,  # FIX: Populate admin full_name field
             email=user.email,
-            hashed_password=hashed_pw
+            password=hashed_pw,       # FIX: Populate admin password field securely
+            hashed_password=hashed_pw,
         )
         db.add(new_user)
         db.commit()
@@ -233,7 +235,9 @@ def google_auth_login(payload: GoogleLoginPayload, db: Session = Depends(get_db)
             else:
                 db_user = models.User(
                     username=payload.name,
+                    full_name=payload.name,            # FIX: Populate admin full_name field
                     email=payload.email,
+                    password="GOOGLE_OAUTH_ACCOUNT",   # FIX: Provide fallback to satisfy NOT NULL constraints
                     hashed_password=None,
                     auth_provider="google",
                     google_sub=payload.sub,  
@@ -454,7 +458,9 @@ def reset_password(payload: ResetPasswordRequest, db: Session = Depends(get_db))
         if len(payload.new_password.encode("utf-8")) > 72:
             raise APIException(status_code=400, msg="Password is too long (max 72 characters)")
 
-        user.hashed_password = get_password_hash(payload.new_password)
+        new_hashed = get_password_hash(payload.new_password)
+        user.hashed_password = new_hashed
+        user.password = new_hashed
         token_record.reset_token = None
         db.commit()
 

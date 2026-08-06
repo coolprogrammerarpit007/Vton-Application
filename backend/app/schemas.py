@@ -53,12 +53,42 @@ class GoogleLoginPayload(BaseModel):
     
 # --- Subscription Plans ---
 class SubscriptionPlanResponse(BaseModel):
+    # --- Core Fields ---
     id: int
     plan_name: str
     title: str
     price: str
     credits: int
     is_active: bool
+    
+    # --- Feature Limits & Gatekeeping ---
+    closet_limit: int
+    virtual_try_on: bool
+    view_360_mode: str
+    change_background: bool
+    model_swap: bool
+    product_to_model: bool
+    image_to_video_resolution: Optional[str]
+    image_to_video_max_count: Optional[int]
+
+    # --- Extended Limits & Quality Configs ---
+    image_to_video_max_seconds: int
+    smart_crop: bool
+    face_to_model: bool
+    create_model_enabled: bool
+    create_model_max: Optional[int]
+    video_quality: str
+    chat_support_enabled: bool
+    chat_support_response_hours: Optional[float] 
+    model_creation_limit: Optional[int]
+    special_offer: bool
+    early_access: bool
+    image_quality: str
+    image_retention_hours: int
+
+    # --- Timestamps ---
+    created_at: Optional[datetime]
+    updated_at: Optional[datetime]
 
     class Config:
         from_attributes = True
@@ -67,8 +97,6 @@ class StandardSubscriptionPlanListResponse(BaseModel):
     status: bool
     msg: str
     data: List[SubscriptionPlanResponse]
-    
-    
 # --- Payment Schemas ---
 class PaymentInitiateRequest(BaseModel):
     plan_name: str = Field(..., description="E.g., silver, gold, platinum")
