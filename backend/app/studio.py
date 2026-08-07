@@ -442,6 +442,27 @@ def sanitize_hair_details(hair_length: str, hair_color: str, hair_type: str, hai
         return f"{base_hair}, styled as {style}"
     return base_hair
 
+
+
+def sanitize_facial_hair(beard_type: str, gender: str) -> str:
+    beard_clean = (beard_type or "").strip()
+    gender_lower = (gender or "").strip().lower()
+    
+    # Prevent assigning facial hair attributes to female models
+    if gender_lower == "female":
+        return ""
+        
+    if not beard_clean or beard_clean.upper() in ["N/A", "NONE"]:
+        return "clean-shaven face"
+        
+    if beard_clean.lower() in ["clean shaven", "clean-shaven", "no beard", "smooth"]:
+        return "clean-shaven face"
+        
+    if any(keyword in beard_clean.lower() for keyword in ["beard", "stubble", "mustache", "goatee"]):
+        return beard_clean
+        
+    return f"{beard_clean} beard"
+
 def sanitize_outfit_for_gender(outfit: str, gender: str) -> str:
     outfit_clean = (outfit or "").strip()
     gender_lower = (gender or "").strip().lower()
@@ -521,8 +542,11 @@ async def model_create(
     else:
         subject_anchor, gender_weight = build_smart_gender_anchor(age, gender, ethnicity)
         clean_hair = sanitize_hair_details(hair_length, hair_color, hair_type, hair_style)
+        clean_beard = sanitize_facial_hair(beard_type, gender)
         clean_outfit = sanitize_outfit_for_gender(outfit_description, gender)
         clean_background = sanitize_background(background_setting)
+        
+        beard_prompt = f"Facial hair details: {clean_beard}. " if clean_beard else ""
         
         final_prompt = (
             f"(Close-up {camera_framing}:1.4) from a {camera_angle}, "
@@ -530,12 +554,12 @@ async def model_create(
             f"The model has {skin_color} skin, an {face_shape} face shape, a {jawline} jawline, "
             f"and {eyebrow} eyebrows. Their eyes are {eye_color}, showing a {face_expression} expression. "
             f"Hair details: {clean_hair}. "
+            f"{beard_prompt}"
             f"The model is {clean_outfit}. "
             f"The setting is {clean_background}. "
             f"Fashion photography, (strict waist-up portrait:1.5), (lower body is strictly out of frame:1.5), "
             f"{resolution}, photorealistic, cinematic lighting, shot on 85mm lens, high-definition."
         )
-
     fashn_input_data = {
         "prompt": final_prompt,
         "resolution": resolution,
@@ -563,7 +587,8 @@ async def model_create(
                 "jawline": jawline,
                 "eyebrow": eyebrow,
                 "face_expression": face_expression,
-                "skin_color": skin_color
+                "skin_color": skin_color,
+                "beard_type": beard_type
             }
         },
         "resolution": resolution,

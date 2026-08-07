@@ -186,5 +186,28 @@ class PromptTemplateItem(BaseModel):
 class PromptTemplateResponse(StandardResponse):
     data: List[PromptTemplateItem]
     
+    
+# Represents a single FAQ in the response
+class FAQResponse(BaseModel):
+    id: int
+    question: str
+    answer: str
+    is_active: bool
+    created_at: Optional[datetime]
+    updated_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+# Standardized wrapper for the frontend
+class StandardFAQListResponse(BaseModel):
+    status: bool
+    msg: str
+    data: List[FAQResponse]
+
+# Input schema for seeding/creating FAQs
+class FAQCreate(BaseModel):
+    question: str
+    answer: str
 
     

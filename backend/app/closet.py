@@ -4,7 +4,7 @@ import logging
 from typing import List
 from logging.handlers import TimedRotatingFileHandler
 
-from fastapi import APIRouter, Depends, UploadFile, File, Form
+from fastapi import APIRouter, Depends, UploadFile, File, Form,Path
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 import shutil
@@ -152,3 +152,54 @@ def get_closet_items(
     except Exception as e:
         logger.error(f"Error retrieving closet items for user {current_user.id}: {str(e)}")
         raise APIException(status_code=500, msg="Failed to retrieve closet items.")
+    
+    
+    
+    
+@router.delete("/{closet_id}", response_model=StandardResponse)
+def delete_closet_item(
+    closet_id: int = Path(..., description="The ID of the closet item to delete"),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    logger.info(f"User ID: {current_user.id} attempting to delete closet item ID: {closet_id}")
+    
+    try:
+        # 1. Query the item and ensure it belongs to the authenticated user
+        item = db.query(models.ClosetItem).filter(
+            models.ClosetItem.id == closet_id,
+            models.ClosetItem.user_id == current_user.id
+        ).first()
+        
+        if not item:
+            logger.warning(f"Delete failed: Closet item {closet_id} not found for user {current_user.id}")
+            raise APIException(status_code=404, msg="Closet item not found or you do not have permission to delete it.")
+        
+        # 2. Delete the physical file from the server storage
+        if item.file_path and os.path.exists(item.file_path):
+            try:
+                os.remove(item.file_path)
+                logger.info(f"Successfully deleted physical file: {item.file_path}")
+            except Exception as e:
+                # Log the file error, but don't stop the DB deletion
+                logger.error(f"Failed to delete physical file {item.file_path}: {str(e)}")
+        
+        # 3. Delete the record from the database
+        db.delete(item)
+        db.commit()
+        
+        logger.info(f"Successfully deleted closet item ID: {closet_id} for user {current_user.id}")
+        
+        return StandardResponse(
+            status=True,
+            msg="Closet item deleted successfully.",
+            data=None
+        )
+            
+    except APIException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error deleting closet item {closet_id} for user {current_user.id}: {str(e)}")
+        raise APIException(status_code=500, msg="Internal server error. Failed to delete closet item.")
+    

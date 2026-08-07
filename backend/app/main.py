@@ -35,6 +35,7 @@ from .image_utils import router as image_utils_router
 from .support import router as support_routers
 from .plans import router as plans_router
 from .payment import router as payment_router
+from .faq import router as faq_router
 
 
 from .fashn_service import trigger_vton_job, check_vton_status
@@ -93,6 +94,7 @@ app.include_router(support_routers)
 app.include_router(image_utils_router)
 app.include_router(plans_router)
 app.include_router(payment_router)
+app.include_router(faq_router)
 
 origins = [
     "https://vton.falcondetectives.com",
