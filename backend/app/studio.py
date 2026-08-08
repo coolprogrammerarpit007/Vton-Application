@@ -202,22 +202,28 @@ async def image_to_video(
     end_image: Optional[UploadFile] = File(None),          
     motion_prompt: Optional[str] = Form(None),             
     duration: int = Form(5),                               
-    resolution: str = Form("1080p"),                       
+    resolution: Optional[str] = Form(None),                      
     db: Session = Depends(get_db),
-    # Gatekeeper: Checks video volume limit quota before proceeding
     subscription: models.UserSubscription = Depends(PlanGatekeeper(resource_key=models.ResourceKey.IMAGE_TO_VIDEO))
 ):
-    
-    # FIX 1: Explicitly enforce that 1080p requires the Platinum plan
+    # FIX: Sanitize input from frontend to ensure it matches backend dictionaries
+    if resolution and not resolution.endswith("p"):
+        resolution = f"{resolution}p"
+        
+    if not resolution:
+        resolution = subscription.plan_snapshot.get("video_quality", "480p")
+
+    # Explicitly enforce that 1080p requires the Platinum plan
     if resolution == "1080p" and "platinum" not in subscription.plan_snapshot.get("plan_name", "").lower():
-        raise APIException(status_code=403, msg="1080p Pro video rendering is exclusively available on the Platinum plan.")
+        raise APIException(status_code=200, msg="1080p Pro video rendering is exclusively available on the Platinum plan.")
     
     # Enforce standard video resolution limits
     quality_map = {"480p": 1, "720p": 2, "1080p": 3}
     user_max = quality_map.get(subscription.plan_snapshot.get("video_quality", "480p"), 1)
     req_min = quality_map.get(resolution, 1)
+    
     if req_min > user_max:
-         raise APIException(status_code=403, msg=f"Your plan is limited to {subscription.plan_snapshot.get('video_quality')} video exports.")
+         raise APIException(status_code=200, msg=f"Your plan is limited to {subscription.plan_snapshot.get('video_quality')} video exports.")
 
     cost = SubscriptionTransactionManager.calculate_cost("video_generation", subscription.plan_snapshot, {"resolution": resolution})
     source_url = await process_upload(source_image)
@@ -260,7 +266,6 @@ async def image_to_video(
             db, subscription, cost, "image_to_video", quota_key=models.ResourceKey.IMAGE_TO_VIDEO, reference_id=db_job.id, reason=str(e)
         )
         raise APIException(status_code=500, msg=str(e))
-
 # ==============================================================================
 # BACKGROUND WORKER: 2-Step Advanced Background Replacement Chain
 # ==============================================================================

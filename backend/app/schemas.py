@@ -235,6 +235,11 @@ class UserSubscriptionResponse(BaseModel):
     starts_at: Optional[datetime]
     ends_at: Optional[datetime]
     cancelled_at: Optional[datetime]
+    
+    latest_txnid: Optional[str]
+    latest_payment_amount: Optional[str]
+    latest_payment_date: Optional[datetime]
+    
     credits_remaining: int
     notes: Optional[str]
     plan_snapshot: Dict[str, Any]

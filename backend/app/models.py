@@ -366,7 +366,7 @@ class SubscriptionPlan(Base):
     image_retention_hours = Column(Integer, nullable=False, default=24)
     
     
-# --- 1. User Subscriptions (Active Plan & Credits) ---
+
 # --- 1. User Subscriptions (Active Plan & Credits) ---
 class UserSubscription(Base):
     __tablename__ = "user_subscriptions"
@@ -385,6 +385,11 @@ class UserSubscription(Base):
     starts_at = Column(DateTime, nullable=True)
     ends_at = Column(DateTime, nullable=True)
     cancelled_at = Column(DateTime, nullable=True)
+    
+    # NEW: Payment tracking columns
+    latest_txnid = Column(String(255), nullable=True)
+    latest_payment_amount = Column(String(50), nullable=True)
+    latest_payment_date = Column(DateTime, nullable=True)
     
     plan_snapshot = Column(JSON, nullable=False, comment='Limits/features copied at assignment')
     credits_remaining = Column(Integer, default=0, nullable=False)

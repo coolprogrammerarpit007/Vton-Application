@@ -216,6 +216,12 @@ async def payment_callback(request: Request, db: Session = Depends(get_db)):
                     active_sub.subscription_plan_id = plan.id
                     active_sub.starts_at = now
                     active_sub.ends_at = cycle_end
+                    
+                    # Update latest payment details
+                    active_sub.latest_txnid = txnid
+                    active_sub.latest_payment_amount = str(plan.price)
+                    active_sub.latest_payment_date = now
+                    
                     sub_id = active_sub.id
                     logger.info(f"Upgraded User ID {user.id} active sub. Added {plan.credits} credits.")
                 else:
@@ -227,7 +233,11 @@ async def payment_callback(request: Request, db: Session = Depends(get_db)):
                         credits_remaining=plan.credits,
                         status=models.UserSubscriptionStatus.ACTIVE,
                         starts_at=now,
-                        ends_at=cycle_end
+                        ends_at=cycle_end,
+                        # Set new payment details
+                        latest_txnid=txnid,
+                        latest_payment_amount=str(plan.price),
+                        latest_payment_date=now
                     )
                     db.add(new_sub)
                     db.flush()

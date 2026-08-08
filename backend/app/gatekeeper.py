@@ -1,12 +1,15 @@
+import logging
 from typing import Optional, Dict, Any
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
 from . import models
 from .database import get_db
 from .auth import get_current_user
+from .exceptions import APIException
 
+logger = logging.getLogger(__name__)
 class PlanGatekeeper:
     """
     FastAPI Dependency to enforce Subscription Plan rules, Feature Flags, and Volume Limits.
@@ -42,33 +45,46 @@ class PlanGatekeeper:
         ).first()
 
         if not subscription:
-            raise HTTPException(
-                # status_code=status.HTTP_403_FORBIDDEN,
+            logger.warning(f"Gatekeeper Block: User {current_user.id} has no active subscription.")
+            raise APIException(
                 status_code=200,
-                detail="No active subscription found. Please purchase a plan to continue."
+                msg="No active subscription found. Please purchase a plan to continue."
             )
 
         snapshot = subscription.plan_snapshot
 
-        # 2. Check Boolean Feature Flag Access (e.g., outerwear_enabled)
+       
+        # 2. Check Boolean Feature Flag Access
         if self.feature_flag:
             has_access = snapshot.get(self.feature_flag, False)
             if not has_access:
-                raise HTTPException(
+                # Map raw database column names to clean, user-friendly UI strings
+                feature_name_map = {
+                    "create_model_enabled": "AI Model Creation",
+                    "model_swap": "Model Swap",
+                    "face_to_model": "Face to Model",
+                    "product_to_model": "Product to Model",
+                    "change_background": "Background Replacement",
+                    "outerwear_enabled": "Outerwear Try-On"
+                }
+                friendly_name = feature_name_map.get(self.feature_flag, self.feature_flag.replace("_", " ").title())
+                
+                logger.warning(f"Gatekeeper Block: User {current_user.id} attempted to access restricted feature '{friendly_name}'.")
+                raise APIException(
                     status_code=200,
-                    detail=f"Your current plan does not support the '{self.feature_flag}' feature. Please upgrade."
+                    msg=f"Your current plan does not support the {friendly_name} feature. Please upgrade to unlock this."
                 )
 
         # 3. Validate Requested Image Resolution (2K vs 4K)
         if self.min_image_quality:
             user_image_quality = snapshot.get("image_quality", "2k")
             if self.min_image_quality == "4k" and user_image_quality == "2k":
-                raise HTTPException(
+                logger.warning(f"Gatekeeper Block: User {current_user.id} attempted 4K generation on 2K plan.")
+                raise APIException(
                     status_code=200,
-                    detail="4K render quality requires the Gold or Platinum plan."
+                    msg="4K render quality requires the Gold or Platinum plan."
                 )
 
-        # 4. Validate Requested Video Quality (480p, 720p, 1080p)
         quality_map = {"480p": 1, "720p": 2, "1080p": 3}
         if self.min_video_quality:
             user_video_quality = snapshot.get("video_quality", "480p")
@@ -76,9 +92,10 @@ class PlanGatekeeper:
             req_min = quality_map.get(self.min_video_quality, 1)
             
             if req_min > user_max:
-                raise HTTPException(
+                logger.warning(f"Gatekeeper Block: User {current_user.id} attempted {self.min_video_quality} video on {user_video_quality} plan.")
+                raise APIException(
                     status_code=200,
-                    detail=f"Your plan is limited to {user_video_quality} video exports."
+                    msg=f"Your plan is limited to {user_video_quality} video exports."
                 )
 
         # 5. Check Resource Usage Limits (Volume Caps from user_plan_resource_usages)
@@ -90,9 +107,10 @@ class PlanGatekeeper:
 
             if usage_record and usage_record.limit_value is not None:
                 if usage_record.used_value >= usage_record.limit_value:
-                    raise HTTPException(
+                    logger.warning(f"Gatekeeper Block: User {current_user.id} exhausted {self.resource_key.value} limit ({usage_record.limit_value}).")
+                    raise APIException(
                         status_code=200,
-                        detail=f"You have reached your limit for {self.resource_key.value}. Limit: {usage_record.limit_value}."
+                        msg=f"You have reached your limit for {self.resource_key.value}. Limit: {usage_record.limit_value}."
                     )
 
         return subscription
@@ -154,9 +172,10 @@ class SubscriptionTransactionManager:
         """
         # 1. Validate Credit Balance
         if subscription.credits_remaining < cost:
-            raise HTTPException(
+            logger.warning(f"Ledger Block: User {subscription.user_id} insufficient credits for {job_type}. Cost: {cost}, Balance: {subscription.credits_remaining}")
+            raise APIException(
                 status_code=200,
-                detail=f"Insufficient credits. Required: {cost}, Available: {subscription.credits_remaining}"
+                msg=f"Insufficient credits. Required: {cost}, Available: {subscription.credits_remaining}"
             )
 
         # 2. Update Credit Balance
@@ -189,9 +208,10 @@ class SubscriptionTransactionManager:
         try:
             db.commit()
             db.refresh(subscription)
-        except IntegrityError:
+        except IntegrityError as e:
             db.rollback()
-            raise HTTPException(status_code=500, detail="Transaction collision. Please try again.")
+            logger.error(f"Ledger Integrity Error for User {subscription.user_id}: {str(e)}")
+            raise APIException(status_code=500, msg="Transaction collision. Please try again.")
 
     @staticmethod
     def refund_resources(
