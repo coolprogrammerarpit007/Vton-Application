@@ -14,6 +14,7 @@ from .fashn_service import trigger_vton_job, check_vton_status
 from .schemas import StandardResponse
 from .exceptions import APIException
 from .config import settings  # UPDATED: Importing settings directly
+from .gatekeeper import PlanGatekeeper, SubscriptionTransactionManager # NEW: Subscription & Ledger injections
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,9 @@ router = APIRouter(prefix="/api/outfit", tags=["Outfit Builder"])
 # ==========================================
 async def process_outfit_chain(
     job_id: int, 
+    user_id: int,
+    cost: int,
+    job_type: str,
     resolution: str, 
     output_format: str
 ):
@@ -114,6 +118,11 @@ async def process_outfit_chain(
         if 'job' in locals() and job:
             job.status = models.JobStatus.FAILED
             db.commit()
+            
+        # Refund user via background DB session if the chain crashes
+        sub = db.query(models.UserSubscription).filter(models.UserSubscription.user_id == user_id, models.UserSubscription.status == models.UserSubscriptionStatus.ACTIVE).first()
+        if sub:
+            SubscriptionTransactionManager.refund_resources(db, sub, cost, job_type, reference_id=job_id, reason=str(e))
     finally:
         db.close()
 
@@ -133,23 +142,27 @@ async def create_outfit_job(
     resolution: str = Form("1k"),
     output_format: str = Form("png"),
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    subscription: models.UserSubscription = Depends(PlanGatekeeper(feature_flag="outerwear_enabled"))
 ):
-    logger.info(f"Multi-garment composition requested by User ID: {current_user.id}")
+    logger.info(f"Multi-garment composition requested by User ID: {subscription.user_id}")
     base_url = settings.BACKEND_URL.rstrip('/')
-
-    if not any([top_closet_id, bottom_closet_id, outerwear_closet_id]):
-        raise APIException(status_code=400, msg="Outfit creation requires at least one closet garment layer selection.")
     
+    # 1. Always calculate as Outerwear (Flat 6 Credits for Gold/Platinum)
+    cost = SubscriptionTransactionManager.calculate_cost("outerwear", subscription.plan_snapshot)
+    
+    # 2. Validate at least one clothing ID was passed
+    selected_garments = [id for id in [top_closet_id, bottom_closet_id, outerwear_closet_id] if id is not None]
+    if not selected_garments:
+        raise APIException(status_code=400, msg="Outfit creation requires at least one closet garment.")
+
+
+     # 3. Resolve Model Image (Generated or Custom Upload)
     person_url: Optional[str] = None
     
     if generated_model_job_id:
-        logger.info(f"Resolving User's Generated AI Model from StudioJob ID: {generated_model_job_id}")
         studio_job = db.query(models.StudioJob).filter(
             models.StudioJob.id == generated_model_job_id,
-            models.StudioJob.user_id == current_user.id,
-            # models.StudioJob.job_type == models.StudioJobType.MODEL_CREATE,
-            # models.StudioJob.status == models.JobStatus.COMPLETED,
+            models.StudioJob.user_id == subscription.user_id,
             models.StudioJob.is_active == True
         ).first()
         
@@ -177,23 +190,22 @@ async def create_outfit_job(
             msg="Must provide either a person_image upload or a valid generated_model_job_id."
         )
 
+    # 4. Database Job Creation
     db_job = models.OutfitJob(
-        user_id=current_user.id,
-        person_image_url=person_url,
-        status=models.JobStatus.PENDING,
-        styling_prompt=outfit_desc
+        user_id=subscription.user_id, person_image_url=person_url, status=models.JobStatus.PENDING, styling_prompt=outfit_desc
     )
     db.add(db_job)
     db.commit()
     db.refresh(db_job)
-
+    
+    # 5. Bind Relational Metadata
     def attach_layer_relationship(closet_id: Optional[int], layer_type: models.OutfitLayer):
         if not closet_id:
             return
             
         item = db.query(models.ClosetItem).filter(
             models.ClosetItem.id == closet_id,
-            models.ClosetItem.user_id == current_user.id
+            models.ClosetItem.user_id == subscription.user_id
         ).first()
         
         if not item:
@@ -222,17 +234,23 @@ async def create_outfit_job(
         logger.error(f"Relational binding error on outfit mapping: {str(e)}")
         raise APIException(status_code=500, msg="Failed to bind relational metadata mapping arrays.")
     
+     # 6. Deduct 6 Credits Atomically
+    SubscriptionTransactionManager.deduct_resources(db, subscription, cost, "outerwear", reference_id=db_job.id)
+    
+    # 7. Queue Background Chain
     background_tasks.add_task(
         process_outfit_chain, 
-        db_job.id, 
-        resolution, 
-        output_format
+        job_id=db_job.id, 
+        user_id=subscription.user_id,
+        cost=cost,
+        job_type="outerwear",
+        resolution=resolution, 
+        output_format=output_format
     )
-
     return StandardResponse(
         status=True,
-        msg="Multi-garment composition successfully prioritized and queued.",
-        data={"outfit_job_id": db_job.id, "status": db_job.status.value}
+        msg="Outfit composition successfully queued.",
+        data={"outfit_job_id": db_job.id, "credits_deducted": cost}
     )
 
 

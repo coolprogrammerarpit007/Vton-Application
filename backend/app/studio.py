@@ -15,6 +15,8 @@ from .fashn_service import trigger_generic_fashn_job, check_vton_status
 from .schemas import StandardResponse
 from .exceptions import APIException
 from .config import settings
+from .gatekeeper import PlanGatekeeper, SubscriptionTransactionManager # NEW: Subscription & Ledger injections
+
 
 logger = logging.getLogger(__name__)
 
@@ -50,8 +52,20 @@ async def product_to_model(
     num_images: int = Form(1),                                             
     output_format: str = Form("png"),                                      
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    # current_user: models.User = Depends(get_current_user),
+    # Gatekeeper: Must have active plan and product_to_model feature
+    subscription: models.UserSubscription = Depends(PlanGatekeeper(feature_flag="product_to_model"))
 ):
+    
+    # Enforce resolution rules
+    if resolution in ["2k", "4k"] and subscription.plan_snapshot.get("image_quality", "2k") == "2k" and resolution == "4k":
+        raise APIException(status_code=403, msg="4K render quality requires the Gold or Platinum plan.")
+    
+    # Calculate dynamic cost & Deduct
+    cost = SubscriptionTransactionManager.calculate_cost(
+        "photoshoot_image", subscription.plan_snapshot, {"image_quality": resolution}
+    )
+    
     garment_url = await process_upload(garment_image)
     
     input_data = {
@@ -79,13 +93,18 @@ async def product_to_model(
         input_data["generation_mode"] = generation_mode
 
     db_job = models.StudioJob(
-        user_id=current_user.id,
+        user_id=subscription.user_id,
         job_type=models.StudioJobType.PRODUCT_TO_MODEL,
         input_data=input_data 
     )
     db.add(db_job)
     db.commit()
     db.refresh(db_job)
+    
+    # Atomic Credit Deduction
+    SubscriptionTransactionManager.deduct_resources(
+        db, subscription, cost, "product_to_model", reference_id=db_job.id
+    )
 
     try:
         fashn_id = await trigger_generic_fashn_job(
@@ -99,10 +118,15 @@ async def product_to_model(
         return StandardResponse(
             status=True, 
             msg="Product-to-Model job started", 
-            data={"job_id": db_job.id, "status": db_job.status.value}
+            data={"job_id": db_job.id, "status": db_job.status.value, "credits_deducted": cost}
         )
+       
     except Exception as e:
         db.rollback()
+        # Refund on immediate failure
+        SubscriptionTransactionManager.refund_resources(
+            db, subscription, cost, "product_to_model", reference_id=db_job.id, reason=str(e)
+        )
         raise APIException(status_code=500, msg=f"AI Engine failed: {str(e)}")
 
 # ==========================================
@@ -118,8 +142,11 @@ async def model_swap(
     generation_mode: Optional[str] = Form(None),           
     num_images: int = Form(1),                             
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+     # Gatekeeper: Restricts to Gold/Platinum
+    subscription: models.UserSubscription = Depends(PlanGatekeeper(feature_flag="model_swap")),
+
 ):
+    cost = SubscriptionTransactionManager.calculate_cost("model_swap", subscription.plan_snapshot)
     orig_url = await process_upload(original_image)
     
     face_url = None
@@ -141,13 +168,13 @@ async def model_swap(
         input_data["generation_mode"] = generation_mode
 
     db_job = models.StudioJob(
-        user_id=current_user.id,
-        job_type=models.StudioJobType.MODEL_SWAP,
-        input_data=input_data  
+        user_id=subscription.user_id, job_type=models.StudioJobType.MODEL_SWAP, input_data=input_data  
     )
     db.add(db_job)
     db.commit()
     db.refresh(db_job)
+    
+    SubscriptionTransactionManager.deduct_resources(db, subscription, cost, "model_swap", reference_id=db_job.id)
 
     try:
         fashn_id = await trigger_generic_fashn_job(
@@ -159,14 +186,11 @@ async def model_swap(
         db_job.status = models.JobStatus.PROCESSING
         db.commit()
         
-        return StandardResponse(
-            status=True, 
-            msg="Model Swap job started", 
-            data={"job_id": db_job.id, "status": db_job.status.value}
-        )
+        return StandardResponse(status=True, msg="Model Swap job started", data={"job_id": db_job.id, "credits_deducted": cost})
         
     except Exception as e:
         db.rollback()
+        SubscriptionTransactionManager.refund_resources(db, subscription, cost, "model_swap", reference_id=db_job.id, reason=str(e))
         raise APIException(status_code=500, msg=str(e))
 
 # ==========================================
@@ -180,10 +204,23 @@ async def image_to_video(
     duration: int = Form(5),                               
     resolution: str = Form("1080p"),                       
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    # Gatekeeper: Checks video volume limit quota before proceeding
+    subscription: models.UserSubscription = Depends(PlanGatekeeper(resource_key=models.ResourceKey.IMAGE_TO_VIDEO))
 ):
-    source_url = await process_upload(source_image)
     
+    # FIX 1: Explicitly enforce that 1080p requires the Platinum plan
+    if resolution == "1080p" and "platinum" not in subscription.plan_snapshot.get("plan_name", "").lower():
+        raise APIException(status_code=403, msg="1080p Pro video rendering is exclusively available on the Platinum plan.")
+    
+    # Enforce standard video resolution limits
+    quality_map = {"480p": 1, "720p": 2, "1080p": 3}
+    user_max = quality_map.get(subscription.plan_snapshot.get("video_quality", "480p"), 1)
+    req_min = quality_map.get(resolution, 1)
+    if req_min > user_max:
+         raise APIException(status_code=403, msg=f"Your plan is limited to {subscription.plan_snapshot.get('video_quality')} video exports.")
+
+    cost = SubscriptionTransactionManager.calculate_cost("video_generation", subscription.plan_snapshot, {"resolution": resolution})
+    source_url = await process_upload(source_image)
     end_url = None
     if end_image:
         end_url = await process_upload(end_image)
@@ -200,38 +237,37 @@ async def image_to_video(
         input_data["prompt"] = motion_prompt
 
     db_job = models.StudioJob(
-        user_id=current_user.id,
-        job_type=models.StudioJobType.IMAGE_TO_VIDEO,
-        input_data=input_data  
+        user_id=subscription.user_id, job_type=models.StudioJobType.IMAGE_TO_VIDEO, input_data=input_data  
     )
     db.add(db_job)
     db.commit()
     db.refresh(db_job)
-
+    
+    # Deduct credits AND increment video quota simultaneously 
+    SubscriptionTransactionManager.deduct_resources(
+        db, subscription, cost, "image_to_video", quota_key=models.ResourceKey.IMAGE_TO_VIDEO, reference_id=db_job.id
+    )
+    
     try:
-        fashn_id = await trigger_generic_fashn_job(
-            model_name="image-to-video",
-            inputs=input_data
-        )
+        fashn_id = await trigger_generic_fashn_job(model_name="image-to-video", inputs=input_data)
         db_job.fashn_job_id = fashn_id
         db_job.status = models.JobStatus.PROCESSING
         db.commit()
-        
-        return StandardResponse(
-            status=True, 
-            msg="Video rendering started", 
-            data={"job_id": db_job.id, "status": db_job.status.value}
-        )
+        return StandardResponse(status=True, msg="Video rendering started", data={"job_id": db_job.id, "credits_deducted": cost})
     except Exception as e:
         db.rollback()
+        SubscriptionTransactionManager.refund_resources(
+            db, subscription, cost, "image_to_video", quota_key=models.ResourceKey.IMAGE_TO_VIDEO, reference_id=db_job.id, reason=str(e)
+        )
         raise APIException(status_code=500, msg=str(e))
-
 
 # ==============================================================================
 # BACKGROUND WORKER: 2-Step Advanced Background Replacement Chain
 # ==============================================================================
 async def process_advanced_background_chain(
     job_id: int, 
+    user_id: int,
+    cost: int,
     original_url: str, 
     harmonized_prompt: str,
     reference_bg_url: Optional[str],
@@ -303,6 +339,11 @@ async def process_advanced_background_chain(
         if 'job' in locals() and job:
             job.status = models.JobStatus.FAILED
             db.commit()
+            
+        # Refund user via background DB session if job fails
+        sub = db.query(models.UserSubscription).filter(models.UserSubscription.user_id == user_id, models.UserSubscription.status == models.UserSubscriptionStatus.ACTIVE).first()
+        if sub:
+            SubscriptionTransactionManager.refund_resources(db, sub, cost, "change_background", reference_id=job_id, reason=str(e))
     finally:
         db.close()
     
@@ -318,8 +359,11 @@ async def change_background(
     resolution: str = Form("2k"),                                                
     generation_mode: str = Form("quality"),                                      
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    subscription: models.UserSubscription = Depends(PlanGatekeeper(feature_flag="change_background"))
 ):
+    
+    cost = SubscriptionTransactionManager.calculate_cost("change_background", subscription.plan_snapshot)
+    
     try:
         orig_url = await process_upload(original_image)
         ref_bg_url = None
@@ -362,13 +406,14 @@ async def change_background(
             input_data["image_context"] = ref_bg_url
 
         db_job = models.StudioJob(
-            user_id=current_user.id,
-            job_type=models.StudioJobType.BACKGROUND_CHANGE,
-            input_data=input_data
+        user_id=subscription.user_id, job_type=models.StudioJobType.BACKGROUND_CHANGE, input_data=input_data
         )
         db.add(db_job)
         db.commit()
         db.refresh(db_job)
+        
+        # Deduct Upfront
+        SubscriptionTransactionManager.deduct_resources(db, subscription, cost, "change_background", reference_id=db_job.id)
 
     except Exception as e:
         db.rollback()
@@ -376,20 +421,19 @@ async def change_background(
 
     try:
         background_tasks.add_task(
-            process_advanced_background_chain, 
-            job_id=db_job.id, 
-            original_url=orig_url, 
-            harmonized_prompt=harmonized_prompt, 
-            reference_bg_url=ref_bg_url,
-            resolution=resolution,
-            generation_mode=generation_mode
-        )
+        process_advanced_background_chain, 
+        job_id=db_job.id, 
+        user_id=subscription.user_id,
+        cost=cost,
+        original_url=orig_url, 
+        harmonized_prompt=harmonized_prompt, 
+        reference_bg_url=ref_bg_url,
+        resolution=resolution,
+        generation_mode=generation_mode
+    )
 
-        return StandardResponse(
-            status=True, 
-            msg="Advanced background replacement queued successfully.", 
-            data={"job_id": db_job.id, "status": db_job.status.value}
-        )
+        return StandardResponse(status=True, msg="Advanced background replacement queued.", data={"job_id": db_job.id, "credits_deducted": cost})
+    
     except Exception as e:
         raise APIException(status_code=500, msg=f"Failed to queue task: {str(e)}")
     
@@ -535,8 +579,11 @@ async def model_create(
     num_images: int = Form(1),                                               
     output_format: str = Form("png"),                                        
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    # Gatekeeper: Enforces feature flag AND Volume quota limits (Gold=15, Plat=30)
+    subscription: models.UserSubscription = Depends(PlanGatekeeper(feature_flag="create_model_enabled", resource_key=models.ResourceKey.MODEL_CREATION))
 ):
+    
+    cost = SubscriptionTransactionManager.calculate_cost("model_create", subscription.plan_snapshot)
     if custom_prompt and custom_prompt.strip():
         final_prompt = custom_prompt.strip()
     else:
@@ -616,14 +663,16 @@ async def model_create(
         db_input_data["generation_mode"] = generation_mode
     
     db_job = models.StudioJob(
-        user_id=current_user.id,
-        job_type=models.StudioJobType.MODEL_CREATE,
-        input_data=db_input_data, 
-        is_active=True
+        user_id=subscription.user_id, job_type=models.StudioJobType.MODEL_CREATE, input_data=db_input_data, is_active=True
     )
     db.add(db_job)
     db.commit()
     db.refresh(db_job)
+    
+    # Atomic Ledger & Quota deduction
+    SubscriptionTransactionManager.deduct_resources(
+        db, subscription, cost, "model_create", quota_key=models.ResourceKey.MODEL_CREATION, reference_id=db_job.id
+    )
 
     try:
         fashn_id = await trigger_generic_fashn_job(
@@ -633,14 +682,12 @@ async def model_create(
         db_job.fashn_job_id = fashn_id
         db_job.status = models.JobStatus.PROCESSING
         db.commit()
-        
-        return StandardResponse(
-            status=True, 
-            msg="Model Create job started successfully.", 
-            data={"job_id": db_job.id, "status": db_job.status.value}
-        )
+        return StandardResponse(status=True, msg="Model Create job started.", data={"job_id": db_job.id, "credits_deducted": cost})
     except Exception as e:
         db.rollback()
+        SubscriptionTransactionManager.refund_resources(
+            db, subscription, cost, "model_create", quota_key=models.ResourceKey.MODEL_CREATION, reference_id=db_job.id, reason=str(e)
+        )
         raise APIException(status_code=500, msg=f"AI Engine failed: {str(e)}")
     
 @router.get("/my-models", response_model=StandardResponse)
@@ -810,8 +857,9 @@ async def face_to_model(
     num_images: int = Form(1),                                             
     output_format: str = Form("jpeg"),                                     
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    subscription: models.UserSubscription = Depends(PlanGatekeeper(feature_flag="face_to_model"))
 ):
+    cost = SubscriptionTransactionManager.calculate_cost("face_to_model", subscription.plan_snapshot)
     face_url = await process_upload(face_image)
     
     input_data = {
@@ -828,13 +876,13 @@ async def face_to_model(
         input_data["generation_mode"] = generation_mode
 
     db_job = models.StudioJob(
-        user_id=current_user.id,
-        job_type=models.StudioJobType.FACE_TO_MODEL,
-        input_data=input_data
+        user_id=subscription.user_id, job_type=models.StudioJobType.FACE_TO_MODEL, input_data=input_data
     )
     db.add(db_job)
     db.commit()
     db.refresh(db_job)
+    
+    SubscriptionTransactionManager.deduct_resources(db, subscription, cost, "face_to_model", reference_id=db_job.id)
 
     try:
         fashn_id = await trigger_generic_fashn_job(
@@ -845,11 +893,8 @@ async def face_to_model(
         db_job.status = models.JobStatus.PROCESSING
         db.commit()
         
-        return StandardResponse(
-            status=True, 
-            msg="Face-to-Model avatar creation started successfully.", 
-            data={"job_id": db_job.id, "status": db_job.status.value}
-        )
+        return StandardResponse(status=True, msg="Face-to-Model creation started.", data={"job_id": db_job.id, "credits_deducted": cost})
     except Exception as e:
         db.rollback()
+        SubscriptionTransactionManager.refund_resources(db, subscription, cost, "face_to_model", reference_id=db_job.id, reason=str(e))
         raise APIException(status_code=500, msg=f"AI Engine failed: {str(e)}")

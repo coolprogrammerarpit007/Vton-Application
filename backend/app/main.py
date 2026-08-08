@@ -20,6 +20,9 @@ from .exceptions import APIException
 from .utils import save_upload_file,download_and_save_remote_image
 from .config import settings  # ADDED: Centralized config import
 
+# Gatekeeper & Transaction Ledger
+from .gatekeeper import PlanGatekeeper, SubscriptionTransactionManager
+
 # Routers
 from .closet import router as closet_router
 from .outfit import router as outfit_router
@@ -180,6 +183,11 @@ def read_root():
     return {"message": "VTON Core Engine is running"}
 
 
+# ==========================================
+# VTON TRY-ON API (2 CREDITS DEDUCTION)
+# ==========================================
+
+
 @app.post("/api/tryon", response_model=StandardResponse, tags=["VTON Try-On API"])
 async def create_tryon_job(
     category: models.GarmentCategory = Form(...),
@@ -200,11 +208,20 @@ async def create_tryon_job(
     output_format: str = Form("png"),
     num_images: int = Form(1),
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    # Gatekeeper: Verifies virtual_try_on feature flag and active subscription
+    subscription: models.UserSubscription = Depends(PlanGatekeeper(feature_flag="virtual_try_on"))
 ):
     
-    logger.info(f"--- NEW TRY-ON REQUEST --- User ID: {current_user.id} | Category: {category.value}")
+    logger.info(f"--- NEW TRY-ON REQUEST --- User ID: {subscription.user_id} | Category: {category.value}")
     base_url = settings.BACKEND_URL.rstrip("/")
+    
+     # Enforce 4K resolution check
+    if resolution == "4k" and subscription.plan_snapshot.get("image_quality", "2k") == "2k":
+        raise APIException(status_code=403, msg="4K render quality requires the Gold or Platinum plan.")
+
+    # Calculate credit cost (2 credits)
+    cost = SubscriptionTransactionManager.calculate_cost("tryon", subscription.plan_snapshot)
+    
     
     # ==========================================
     # 0. Conflict Validation
@@ -222,10 +239,10 @@ async def create_tryon_job(
         # 1. Resolve Garment Source
         # ==========================================
         if closet_item_id:
-            logger.info(f"Resolving closet_item_id: {closet_item_id} for User {current_user.id}")
+            logger.info(f"Resolving closet_item_id: {closet_item_id} for User {subscription.user_id}")
             closet_item = db.query(models.ClosetItem).filter(
                 models.ClosetItem.id == closet_item_id,
-                models.ClosetItem.user_id == current_user.id
+                models.ClosetItem.user_id == subscription.user_id
             ).first()
             
             if not closet_item:
@@ -294,7 +311,7 @@ async def create_tryon_job(
             logger.info(f"Resolving User's Generated AI Model from StudioJob ID: {generated_model_job_id}")
             studio_job = db.query(models.StudioJob).filter(
                 models.StudioJob.id == generated_model_job_id,
-                models.StudioJob.user_id == current_user.id,
+                models.StudioJob.user_id == subscription.user_id,
                 models.StudioJob.job_type == models.StudioJobType.MODEL_CREATE,
                 models.StudioJob.status == models.JobStatus.COMPLETED
             ).first()
@@ -319,12 +336,9 @@ async def create_tryon_job(
         else:
             raise APIException(status_code=400, msg="Workspace requires either a system_model_id or a person_image asset.")
 
-        # ==========================================
-        # 3. Database Insertion (Pre-Commit)
-        # ==========================================
-        logger.info("Creating local tracking database record...")
+       # 3. Create Local Tracking Record
         db_job = models.TryOnJob(
-            user_id=current_user.id,
+            user_id=subscription.user_id,
             category=category,
             user_image_url=person_url,
             garment_image_url=garment_url,
@@ -334,11 +348,16 @@ async def create_tryon_job(
         db.commit()
         db.refresh(db_job)
 
+        # 4. Deduct Credits Atomically
+        SubscriptionTransactionManager.deduct_resources(
+            db, subscription, cost, "tryon", reference_id=db_job.id
+        )
+
     except APIException:
         raise
     except Exception as e:
         db.rollback()
-        logger.error(f"CRITICAL FAILURE preparing try-on job for User {current_user.id}: {str(e)}", exc_info=True)
+        logger.error(f"CRITICAL FAILURE preparing try-on job for User {subscription.user_id}: {str(e)}", exc_info=True)
         raise APIException(status_code=500, msg="Failed to prepare job assets. Please try again.")
     
     
@@ -372,16 +391,21 @@ async def create_tryon_job(
                 "status": db_job.status.value,     
                 "fashn_job_id": db_job.fashn_job_id,
                 "user_image_url": db_job.user_image_url,
-                "garment_image_url": db_job.garment_image_url
+                "garment_image_url": db_job.garment_image_url,
+                "credits_deducted": cost
             }
         )
         
     except Exception as api_error:
         logger.error(f"FASHN API Trigger failed for Job {db_job.id}: {str(api_error)}", exc_info=True)
-        # Safely fail the existing job in the database without dropping the entire transaction
         db_job.status = models.JobStatus.FAILED
         db.commit()
-        raise APIException(status_code=500, msg="Failed to initiate AI core. Please try again later.")
+
+        # Immediate refund if external service call fails
+        SubscriptionTransactionManager.refund_resources(
+            db, subscription, cost, "tryon", reference_id=db_job.id, reason=str(api_error)
+        )
+        raise APIException(status_code=500, msg="Failed to initiate AI core. Your credits have been refunded.")
 
 @app.get("/api/tryon/{job_id}", response_model=StandardResponse,tags=["VTON Try-On API"])
 async def get_tryon_status(
@@ -442,130 +466,7 @@ async def get_tryon_status(
         logger.error(f"CRITICAL ERROR polling FASHN status for Job {job_id}: {str(e)}", exc_info=True)
         raise APIException(status_code=500, msg="Internal server error while polling job status.")
     
-# @app.get("/api/universal-status/{module_type}/{job_id}", response_model=StandardResponse, tags=["VTON Try-On API"])
-# async def universal_status_check(
-#     module_type: MasterModuleType,
-#     job_id: int, 
-#     db: Session = Depends(get_db),
-#     current_user: models.User = Depends(get_current_user)
-# ):
-#     logger.info(f"Universal Poll: User {current_user.id} checking {module_type.value} Job {job_id}")
 
-#     try:
-#         # ==========================================
-#         # ROUTE 1: SINGLE TRY-ON (models.TryOnJob)
-#         # ==========================================
-#         if module_type == MasterModuleType.TRYON:
-#             db_job = db.query(models.TryOnJob).filter(
-#                 models.TryOnJob.id == job_id, 
-#                 models.TryOnJob.user_id == current_user.id
-#             ).first()
-            
-#             if not db_job: 
-#                 raise APIException(status_code=404, msg="Try-On job not found.")
-            
-#             # Poll FASHN directly if still processing
-#             if db_job.status == models.JobStatus.PROCESSING and db_job.fashn_job_id:
-#                 fashn_status, output = await check_vton_status(db_job.fashn_job_id)
-                
-#                 if fashn_status == "completed":
-#                     # INTERCEPT AND DOWNLOAD IMAGES LOCALLY
-#                     urls_to_download = output if isinstance(output, list) else [output]
-#                     local_urls = []
-                    
-#                     for remote_url in urls_to_download:
-#                         filename = await download_and_save_remote_image(remote_url)
-#                         local_urls.append(f"{base_url}/static_uploads/{filename}")
-
-#                     db_job.status = models.JobStatus.COMPLETED
-#                     db_job.result_image_urls = local_urls
-#                     db.commit()
-                    
-#                 elif fashn_status == "failed":
-#                     db_job.status = models.JobStatus.FAILED
-#                     db.commit()
-
-#             return StandardResponse(
-#                 status=True, 
-#                 msg="Status retrieved", 
-#                 data={
-#                     "id": db_job.id, 
-#                     "module": module_type.value, 
-#                     "status": db_job.status.value, 
-#                     "result_image_urls": db_job.result_image_urls
-#                 }
-#             )
-            
-#         # ==========================================
-#         # ROUTE 2: 360 GENERATION (models.TryOnJob)
-#         # ==========================================
-
-#         elif module_type == MasterModuleType.THREE_SIXTY:
-#             db_job = db.query(models.TryOnJob).filter(
-#                 models.TryOnJob.id == job_id, 
-#                 models.TryOnJob.user_id == current_user.id
-#             ).first()
-            
-#             if not db_job: 
-#                 raise APIException(status_code=404, msg="360 view job not found.")
-
-#             formatted_urls = []
-#             if db_job.result_image_urls:
-#                 raw_urls = db_job.result_image_urls
-                
-#                 if isinstance(raw_urls, str):
-#                     try:
-#                         raw_urls = json.loads(raw_urls)
-#                     except Exception:
-#                         raw_urls = [raw_urls]
-
-#                 if isinstance(raw_urls, dict):
-#                     formatted_urls = list(raw_urls.values())
-#                 elif isinstance(raw_urls, list):
-#                     formatted_urls = raw_urls
-
-#             return StandardResponse(
-#                 status=True, 
-#                 msg="Status retrieved", 
-#                 data={
-#                     "id": db_job.id, 
-#                     "module": module_type.value, 
-#                     "status": db_job.status.value, 
-#                     "result_image_urls": formatted_urls
-#                 }
-#             )
-            
-            
-        # ==========================================
-        # ROUTE 3: OUTFIT BUILDER (models.OutfitJob)
-        # ==========================================
-
-    #     elif module_type == MasterModuleType.OUTFIT:
-    #         db_job = db.query(models.OutfitJob).filter(
-    #             models.OutfitJob.id == job_id, 
-    #             models.OutfitJob.user_id == current_user.id
-    #         ).first()
-            
-    #         if not db_job: 
-    #             raise APIException(status_code=404, msg="Outfit job not found.")
-
-    #         # Background task updates local DB record; return singular result_image_url
-    #         return StandardResponse(
-    #             status=True, 
-    #             msg="Status retrieved", 
-    #             data={
-    #                 "id": db_job.id, 
-    #                 "module": module_type.value, 
-    #                 "status": db_job.status.value, 
-    #                 "result_image_url": db_job.result_image_url
-    #             }
-    #         )
-
-    # except APIException:
-    #     raise
-    # except Exception as e:
-    #     logger.error(f"Universal Polling Error: {str(e)}", exc_info=True)
-    #     raise APIException(status_code=500, msg="Internal tracking error.")
     
     
 @app.get("/api/universal-status/{module_type}/{job_id}", response_model=StandardResponse, tags=["VTON Try-On API"])

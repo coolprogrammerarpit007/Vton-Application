@@ -6,14 +6,15 @@ from typing import Optional, Dict
 from fastapi import APIRouter, Depends, Form, File, UploadFile, BackgroundTasks
 from sqlalchemy.orm import Session
 
-from app import models
-from app.database import get_db, SessionLocal
-from app.auth import get_current_user
-from app.utils import save_upload_file,download_and_save_remote_image
-from app.fashn_service import trigger_vton_job, check_vton_status
-from app.schemas import StandardResponse
-from app.exceptions import APIException
-from app.config import settings  # ADDED: Centralized config import
+from . import models
+from .database import get_db, SessionLocal
+from .auth import get_current_user
+from .utils import save_upload_file, download_and_save_remote_image
+from .fashn_service import trigger_vton_job, check_vton_status
+from .schemas import StandardResponse
+from .exceptions import APIException
+from .config import settings
+from .gatekeeper import PlanGatekeeper, SubscriptionTransactionManager # Gatekeeper & Transaction Manager
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,8 @@ router = APIRouter(prefix="/api/360", tags=["360 View Generator"])
 
 async def process_dynamic_generation_chain(
     job_id: int,
+    user_id: int,
+    cost: int,
     person_urls: Dict[str, str],  
     garment_url: str,
     category: models.GarmentCategory,
@@ -29,10 +32,7 @@ async def process_dynamic_generation_chain(
     output_format: str
 ):
     """
-    Maximum Efficiency Worker:
-    1. Triggers all provided uploaded angles to FASHN API simultaneously.
-    2. Polls all active FASHN jobs in parallel.
-    3. Saves the final URLs back to the database.
+    Parallel execution worker for 360° multi-angle processing with automated credit refund handling.
     """
     db = SessionLocal()
     base_url = settings.BACKEND_URL.rstrip("/")
@@ -74,10 +74,10 @@ async def process_dynamic_generation_chain(
         position_fashn_ids: Dict[str, str] = {}
         for res in trigger_results:
             if isinstance(res, Exception):
+                # FIX: Raise exception instead of returning so control flow jumps to except block for credit refund
                 logger.error(f"[360 WORKER] Failed to trigger view for Job {job_id}: {res}")
-                db_job.status = models.JobStatus.FAILED
-                db.commit()
-                return
+                raise Exception(f"Failed to dispatch position trigger: {str(res)}")
+                
             pos, fashn_id = res
             position_fashn_ids[pos] = fashn_id
 
@@ -106,14 +106,10 @@ async def process_dynamic_generation_chain(
                     completed_results[pos] = f"{base_url}/static_uploads/{local_filename}"
                     del pending_positions[pos]
                 elif status == "failed":
-                    db_job.status = models.JobStatus.FAILED
-                    db.commit()
-                    return
+                    raise Exception(f"AI Engine reported failure for angle: {pos}")
 
         if pending_positions:
-            db_job.status = models.JobStatus.FAILED
-            db.commit()
-            return
+            raise Exception("Polling timeout reached before all angles finished rendering.")
 
         # 3. Finalize
         db_job.result_image_urls = completed_results
@@ -122,10 +118,20 @@ async def process_dynamic_generation_chain(
         logger.info(f"[360 WORKER] Job {job_id} successfully completed for angles: {list(completed_results.keys())}")
 
     except Exception as e:
-        logger.error(f"[360 WORKER] Crash: {str(e)}", exc_info=True)
+        logger.error(f"[360 WORKER] Crash on Job {job_id}: {str(e)}", exc_info=True)
         if 'db_job' in locals() and db_job:
             db_job.status = models.JobStatus.FAILED
             db.commit()
+
+        # Automated refund handling if background processing fails
+        sub = db.query(models.UserSubscription).filter(
+            models.UserSubscription.user_id == user_id,
+            models.UserSubscription.status == models.UserSubscriptionStatus.ACTIVE
+        ).first()
+        if sub:
+            SubscriptionTransactionManager.refund_resources(
+                db, sub, cost, "three_sixty", reference_id=job_id, reason=str(e)
+            )
     finally:
         db.close()
         
@@ -146,7 +152,8 @@ async def create_360_job(
     person_image_side: Optional[UploadFile] = File(None),
 
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    # Gatekeeper: Verifies active plan and snapshot rules
+    subscription: models.UserSubscription = Depends(PlanGatekeeper())
 ):
     # UPDATED: Pulling dynamic base URL from settings
     base_url = settings.BACKEND_URL.rstrip("/")
@@ -156,7 +163,7 @@ async def create_360_job(
         if closet_item_id:
             item = db.query(models.ClosetItem).filter(
                 models.ClosetItem.id == closet_item_id,
-                models.ClosetItem.user_id == current_user.id
+                models.ClosetItem.user_id == subscription.user_id
             ).first()
             if not item:
                 raise APIException(status_code=404, msg="Selected closet garment not found or unauthorized.")
@@ -195,10 +202,22 @@ async def create_360_job(
 
         if not person_urls:
             raise APIException(status_code=400, msg="You must upload at least one person image (front, back, or side).")
+        
+        # 3. Feature Gate Rule: Silver Tier restriction on multi-angle views
+        view_360_mode = subscription.plan_snapshot.get("view_360_mode", "single_image")
+        if len(person_urls) > 1 and view_360_mode == "single_image":
+            raise APIException(
+                status_code=403, 
+                msg="Multi-angle 360° generation (front, back, side) is restricted to Gold and Platinum plans. Silver plan supports single image view only."
+            )
+            
+            
+         # 4. Calculate Billing (2 credits per requested angle)
+        cost = len(person_urls) * 2
 
-        # 3. Create tracking database entry
+        # 5. Persist Tracking Record
         db_job = models.TryOnJob(
-            user_id=current_user.id,
+            user_id=subscription.user_id,
             category=category,
             user_image_url=list(person_urls.values())[0], 
             garment_image_url=garment_url,
@@ -207,11 +226,18 @@ async def create_360_job(
         db.add(db_job)
         db.commit()
         db.refresh(db_job)
+        
+         # 6. Deduct Credits Atomically
+        SubscriptionTransactionManager.deduct_resources(
+            db, subscription, cost, "three_sixty", reference_id=db_job.id
+        )
 
-        # 4. Dispatch Async Background Task
+        # 7. Dispatch Background Processing Chain
         background_tasks.add_task(
             process_dynamic_generation_chain,
             job_id=db_job.id,
+            user_id=subscription.user_id,
+            cost=cost,
             person_urls=person_urls,
             garment_url=garment_url,
             category=category,
@@ -219,14 +245,14 @@ async def create_360_job(
             resolution=resolution,
             output_format=output_format
         )
-
         return StandardResponse(
             status=True,
-            msg=f"360 generation initiated for angles: {list(person_urls.keys())}.",
+            msg=f"360° generation initiated for angles: {list(person_urls.keys())}.",
             data={
                 "job_id": db_job.id,
                 "status": db_job.status.value,
-                "requested_angles": list(person_urls.keys())
+                "requested_angles": list(person_urls.keys()),
+                "credits_deducted": cost
             }
         )
 

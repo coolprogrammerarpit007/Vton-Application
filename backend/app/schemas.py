@@ -2,7 +2,7 @@ import re
 from datetime import datetime
 from typing import Any, Optional, List, Dict
 from pydantic import BaseModel, EmailStr, Field, field_validator
-from .models import GarmentCategory, JobStatus, StudioJobType, TicketStatus, TicketPriority
+from .models import GarmentCategory, JobStatus, StudioJobType, TicketStatus, TicketPriority, UserSubscription, ResourceKey, SubscriptionEvent, UserSubscriptionStatus
 
 # --- User Schemas ---
 class UserCreate(BaseModel):
@@ -68,6 +68,7 @@ class SubscriptionPlanResponse(BaseModel):
     change_background: bool
     model_swap: bool
     product_to_model: bool
+    outerwear_enabled: bool  # NEW: Added to schema
     image_to_video_resolution: Optional[str]
     image_to_video_max_count: Optional[int]
 
@@ -211,3 +212,75 @@ class FAQCreate(BaseModel):
     answer: str
 
     
+
+# ************************ Subscription Models Responses ******************************
+# --- Resource Usage Schema ---
+class UserPlanResourceUsageResponse(BaseModel):
+    id: int
+    resource_key: ResourceKey
+    limit_value: Optional[int]
+    used_value: int
+    period_starts_at: Optional[datetime]
+    period_ends_at: Optional[datetime]
+    
+    class Config:
+        from_attributes = True
+
+# --- Active Subscription State Schema ---
+class UserSubscriptionResponse(BaseModel):
+    id: int
+    user_id: int
+    subscription_plan_id: int
+    status: UserSubscriptionStatus
+    starts_at: Optional[datetime]
+    ends_at: Optional[datetime]
+    cancelled_at: Optional[datetime]
+    credits_remaining: int
+    notes: Optional[str]
+    plan_snapshot: Dict[str, Any]
+    
+    resource_usages: List[UserPlanResourceUsageResponse] = []
+
+    class Config:
+        from_attributes = True
+
+class StandardUserSubscriptionResponse(BaseModel):
+    status: bool
+    msg: str
+    data: Optional[UserSubscriptionResponse] = None
+
+# --- Ledger / Transaction Log Schema ---
+class UserResourceUsageLogResponse(BaseModel):
+    id: int
+    resource_key: ResourceKey
+    delta: int
+    used_after: int
+    limit_at_time: Optional[int]
+    reference_type: Optional[str]
+    reference_id: Optional[int]
+    description: Optional[str]
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class StandardLedgerHistoryResponse(BaseModel):
+    status: bool
+    msg: str
+    data: List[UserResourceUsageLogResponse]
+
+# --- Subscription History Schema ---
+class UserSubscriptionHistoryResponse(BaseModel):
+    id: int
+    subscription_plan_id: int
+    previous_subscription_plan_id: Optional[int]
+    event: SubscriptionEvent
+    credits_at_event: Optional[int]
+    event_at: datetime
+    effective_from: Optional[datetime]
+    effective_until: Optional[datetime]
+    meta_data: Optional[Dict[str, Any]] = None
+    
+    class Config:
+        from_attributes = True
+# *************************************************************************************

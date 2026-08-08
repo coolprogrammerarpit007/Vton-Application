@@ -16,6 +16,7 @@ from .schemas import StandardResponse
 from .auth import get_current_user
 from .config import settings  # ADDED: Import settings for dynamic backend URL
 from app.exceptions import APIException
+from .gatekeeper import PlanGatekeeper # Subscription Dependency Injection
 
 logger = logging.getLogger(__name__)
 
@@ -38,26 +39,41 @@ async def upload_closet_item(
     label: str = Form("My Garment"),
     files: List[UploadFile] = File(...),
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    # Gatekeeper: Ensures active subscription and provides plan_snapshot
+    subscription: models.UserSubscription = Depends(PlanGatekeeper())
 ):
-    logger.info(f"Batch closet upload attempt by user ID: {current_user.id} | Items: {len(files)}")
+    """
+    Upload closet garments with strict quota limit enforcement (Silver: 10, Gold: 20, Platinum: 30).
+    """
+    logger.info(f"Batch closet upload attempt by user ID: {subscription.user_id} | Items: {len(files)}")
     
-    # --- 1. VALIDATE ALL FILES (Memory-Safe Pass) ---
+    # --- 1. ENFORCE CLOSET CAPACITY LIMIT ---
+    closet_limit = subscription.plan_snapshot.get("closet_limit", 10)
+    current_count = db.query(models.ClosetItem).filter(
+        models.ClosetItem.user_id == subscription.user_id
+    ).count()
+
+    if current_count + len(files) > closet_limit:
+        raise APIException(
+            status_code=403, 
+            msg=f"Closet storage capacity exceeded. Your plan limit is {closet_limit} items (you currently have {current_count} items stored)."
+        )
+    
+    # --- 2. VALIDATE ALL FILES (Memory-Safe Pass) ---
     for file in files:
         if not file.content_type.startswith("image/"):
-            logger.warning(f"Invalid file type uploaded by user {current_user.id}: {file.content_type}")
+            logger.warning(f"Invalid file type uploaded by user {subscription.user_id}: {file.content_type}")
             raise APIException(status_code=400, msg=f"Invalid format for {file.filename}. Images only.")
         
-        # Check size safely without loading the whole file into RAM
-        file.file.seek(0, 2)  # Move to the end of the file
-        file_size = file.file.tell()  # Get the cursor position (file size)
-        file.file.seek(0)  # Reset cursor back to the beginning for saving
+        file.file.seek(0, 2)
+        file_size = file.file.tell()
+        file.file.seek(0)
         
         if file_size > MAX_FILE_SIZE:
-            logger.warning(f"File size exceeded for {file.filename} by user {current_user.id}")
+            logger.warning(f"File size exceeded for {file.filename} by user {subscription.user_id}")
             raise APIException(status_code=400, msg=f"File '{file.filename}' exceeds the 1MB size limit.")
 
-    # --- 2. SAVE TO DISK & DATABASE ---
+    # --- 3. SAVE TO DISK & DATABASE ---
     uploaded_items_info = []
     
     try:
@@ -73,7 +89,7 @@ async def upload_closet_item(
             item_label = label if len(files) == 1 else f"{label} - {idx + 1}"
             
             new_item = models.ClosetItem(
-                user_id=current_user.id,
+                user_id=subscription.user_id,
                 file_path=path,
                 label=item_label,
                 category=category.value,
@@ -88,13 +104,13 @@ async def upload_closet_item(
             })
             
         db.commit() 
-        logger.info(f"Successfully uploaded {len(uploaded_items_info)} closet items for user {current_user.id}")
+        logger.info(f"Successfully uploaded {len(uploaded_items_info)} closet items for user {subscription.user_id}")
         
         return StandardResponse(
             status=True,
             msg=f"{len(uploaded_items_info)} garment(s) uploaded to closet successfully",
             data={
-                "user_id": current_user.id,
+                "user_id": subscription.user_id,
                 "category": category.value,
                 "wear_category": wear_category.value,
                 "items": uploaded_items_info
@@ -102,7 +118,7 @@ async def upload_closet_item(
         )
         
     except Exception as e:
-        logger.error(f"Error during batch closet upload for user {current_user.id}: {str(e)}")
+        logger.error(f"Error during batch closet upload for user {subscription.user_id}: {str(e)}")
         db.rollback() 
         raise APIException(status_code=500, msg="Internal server error during file upload.")
     

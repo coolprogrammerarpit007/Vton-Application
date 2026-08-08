@@ -1,8 +1,9 @@
-import enum
-from datetime import datetime
-from sqlalchemy import Column, Integer, String, Boolean, Text, Enum, ForeignKey, DateTime, JSON, func
+from sqlalchemy import Column, Integer, BigInteger, String, Text, Enum, DateTime, JSON, ForeignKey, UniqueConstraint,Boolean,DATETIME,DECIMAL
+from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
+import enum
 from .database import Base
+from datetime import datetime
 
 class Platform(Base):
     __tablename__ = "platforms"
@@ -291,9 +292,35 @@ class SupportTicket(Base):
 
     user = relationship("User", backref="support_tickets")
 
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Enum, DECIMAL
-from sqlalchemy.sql import func
-from .database import Base  # Adjust import based on your setup
+
+# ******************************************* Start Of Subscription Models ***********************************
+
+# --- New Enums for Subscription & Ledger System ---
+class UserSubscriptionStatus(str, enum.Enum):
+    ACTIVE = "active"
+    EXPIRED = "expired"
+    CANCELLED = "cancelled"
+    PENDING = "pending"
+    
+    
+class ResourceKey(str, enum.Enum):
+    CREDITS = "credits"
+    CLOSET_ITEMS = "closet_items"
+    IMAGE_TO_VIDEO = "image_to_video"
+    MODEL_CREATION = "model_creation"
+    CREATE_MODEL = "create_model"
+    
+        
+class SubscriptionEvent(str, enum.Enum):
+    ASSIGNED = "assigned"
+    RENEWED = "renewed"
+    UPGRADED = "upgraded"
+    DOWNGRADED = "downgraded"
+    CANCELLED = "cancelled"
+    EXPIRED = "expired"
+    REACTIVATED = "reactivated"
+    USAGE_RESET = "usage_reset"
+
 
 class SubscriptionPlan(Base):
     __tablename__ = "subscription_plans"
@@ -316,8 +343,12 @@ class SubscriptionPlan(Base):
     change_background = Column(Boolean, nullable=False, default=True)
     model_swap = Column(Boolean, nullable=False, default=False)
     product_to_model = Column(Boolean, nullable=False, default=True)
+    # NEW: Outerwear Feature Flag
+    outerwear_enabled = Column(Boolean, nullable=False, default=False)
+    
     image_to_video_resolution = Column(String(20), nullable=True)
     image_to_video_max_count = Column(Integer, nullable=True)
+    
 
     # --- Extended Limits & Quality Configs (From image_aadb76.png) ---
     image_to_video_max_seconds = Column(Integer, nullable=False, default=10)
@@ -333,6 +364,140 @@ class SubscriptionPlan(Base):
     early_access = Column(Boolean, nullable=False, default=False)
     image_quality = Column(Enum('2k', '4k', name='image_quality_enum'), nullable=False, default='2k')
     image_retention_hours = Column(Integer, nullable=False, default=24)
+    
+    
+# --- 1. User Subscriptions (Active Plan & Credits) ---
+# --- 1. User Subscriptions (Active Plan & Credits) ---
+class UserSubscription(Base):
+    __tablename__ = "user_subscriptions"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    user_id = Column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False)
+    subscription_plan_id = Column(Integer, ForeignKey("subscription_plans.id"), nullable=False, index=True)
+    
+    # CRITICAL FIX: Maps SQLAlchemy to the lowercase database values to prevent LookupError
+    status = Column(
+        Enum(UserSubscriptionStatus, values_callable=lambda obj: [e.value for e in obj]), 
+        default=UserSubscriptionStatus.ACTIVE, 
+        nullable=False, 
+        index=True
+    )
+    starts_at = Column(DateTime, nullable=True)
+    ends_at = Column(DateTime, nullable=True)
+    cancelled_at = Column(DateTime, nullable=True)
+    
+    plan_snapshot = Column(JSON, nullable=False, comment='Limits/features copied at assignment')
+    credits_remaining = Column(Integer, default=0, nullable=False)
+    
+    assigned_by = Column(BigInteger, nullable=True)
+    notes = Column(Text, nullable=True)
+    
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    user = relationship("User", backref="subscription")
+    plan = relationship("SubscriptionPlan")
+
+
+# --- 2. user_plan_resource_usages ---
+# --- 2. user_plan_resource_usages ---
+class UserPlanResourceUsage(Base):
+    __tablename__ = "user_plan_resource_usages"
+    __table_args__ = (
+        UniqueConstraint('user_subscription_id', 'resource_key', name='sub_resource_unique'),
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    user_id = Column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    user_subscription_id = Column(BigInteger, ForeignKey("user_subscriptions.id", ondelete="CASCADE"), nullable=False)
+    
+    # CRITICAL FIX: Map lowercase DB strings to the Python Enum values
+    resource_key = Column(
+        Enum(ResourceKey, values_callable=lambda obj: [e.value for e in obj]), 
+        nullable=False
+    )
+    limit_value = Column(Integer, nullable=True, comment='NULL = unlimited')
+    used_value = Column(Integer, default=0, nullable=False)
+    
+    period_starts_at = Column(DateTime, nullable=True)
+    period_ends_at = Column(DateTime, nullable=True)
+    
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    subscription = relationship("UserSubscription", backref="resource_usages")
+    
+    
+# --- 3. user_resource_usage_logs ---
+class UserResourceUsageLog(Base):
+    __tablename__ = "user_resource_usage_logs"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    user_id = Column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_subscription_id = Column(BigInteger, ForeignKey("user_subscriptions.id", ondelete="CASCADE"), nullable=False, index=True)
+    
+    # CRITICAL FIX
+    resource_key = Column(
+        Enum(ResourceKey, values_callable=lambda obj: [e.value for e in obj]), 
+        nullable=False, 
+        index=True
+    )
+    delta = Column(Integer, nullable=False, comment='Positive = consume, negative = refund')
+    used_after = Column(Integer, nullable=False)
+    limit_at_time = Column(Integer, nullable=True)
+    
+    reference_type = Column(String(255), nullable=True)
+    reference_id = Column(BigInteger, nullable=True)
+    description = Column(String(500), nullable=True)
+    
+    created_at = Column(DateTime, server_default=func.now(), index=True)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    
+    
+# --- 4. user_subscription_histories ---
+class UserSubscriptionHistory(Base):
+    __tablename__ = "user_subscription_histories"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    user_id = Column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_subscription_id = Column(BigInteger, ForeignKey("user_subscriptions.id", ondelete="SET NULL"), nullable=True)
+    
+    subscription_plan_id = Column(Integer, ForeignKey("subscription_plans.id"), nullable=False)
+    previous_subscription_plan_id = Column(Integer, ForeignKey("subscription_plans.id"), nullable=True)
+    
+    # CRITICAL FIX: Map lowercase event strings (e.g. 'assigned', 'upgraded')
+    event = Column(
+        Enum(SubscriptionEvent, values_callable=lambda obj: [e.value for e in obj]), 
+        nullable=False
+    )
+    plan_snapshot = Column(JSON, nullable=False)
+    credits_at_event = Column(Integer, nullable=True)
+    
+    event_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False, index=True)
+    effective_from = Column(DateTime, nullable=True)
+    effective_until = Column(DateTime, nullable=True)
+    
+    meta_data = Column("meta", JSON, nullable=True)
+    created_by = Column(BigInteger, nullable=True)
+    
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+
+
+    
+    
+    
+    
+# **********************************************************************************************************
+
+# ******************  End Of Subscription ******************************************************************
+
+
+
+# ******************************************* Models for the Payment Integration   ****************************
+
 class TransactionStatus(str, enum.Enum):
     PENDING = "pending"
     SUCCESS = "success"
@@ -360,6 +525,8 @@ class PaymentTransaction(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     user = relationship("User", backref="payment_transactions")
+
+# *********************************************** End *********************************************************
     
     
     

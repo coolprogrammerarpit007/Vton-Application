@@ -1,8 +1,7 @@
 import logging
 import json
-import httpx
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
@@ -11,35 +10,11 @@ from .database import get_db
 from .auth import get_current_user
 from .schemas import StandardResponse
 from .exceptions import APIException
-from .config import settings
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/dashboard", tags=["Dashboard"])
 
-FASHN_API_KEY = settings.FASHN_API_KEY
-FASHN_CREDITS_URL = "https://api.fashn.ai/v1/credits"
-
-# ==============================================================================
-# HELPER: Live FASHN API Credit Fetcher
-# ==============================================================================
-async def fetch_fashn_credits() -> Dict[str, Any]:
-    """Fetches real-time credit balance directly from FASHN API."""
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            headers = {"Authorization": f"Bearer {FASHN_API_KEY}"}
-            response = await client.get(FASHN_CREDITS_URL, headers=headers)
-            if response.status_code == 200:
-                data = response.json()
-                return data.get("credits", {"total": 0, "subscription": 0, "on_demand": 0})
-    except Exception as e:
-        logger.error(f"Failed to fetch live FASHN credits: {str(e)}")
-    
-    return {"total": 0, "subscription": 0, "on_demand": 0}
-
-# ==============================================================================
-# 1. UNIFIED DASHBOARD API ENDPOINT (COMPLETED JOBS ONLY)
-# ==============================================================================
 @router.get("", response_model=StandardResponse)
 async def get_dashboard_data(
     category_filter: Optional[str] = Query("all", alias="filter"),
@@ -50,16 +25,24 @@ async def get_dashboard_data(
     current_user: models.User = Depends(get_current_user)
 ):
     try:
-        fashn_credits = await fetch_fashn_credits()
-        credits_left = fashn_credits.get("total", 0)
-        credits_max = fashn_credits.get("subscription", 100) or 100
+        active_sub = db.query(models.UserSubscription).filter(
+            models.UserSubscription.user_id == current_user.id,
+            models.UserSubscription.status == models.UserSubscriptionStatus.ACTIVE
+        ).first()
+
+        credits_left = active_sub.credits_remaining if active_sub else 0
+        plan_snapshot = active_sub.plan_snapshot if active_sub else {}
+        plan_title = plan_snapshot.get("title", "Free Member")
+        credits_max = plan_snapshot.get("credits", 100) or 100
         credits_low_warning = credits_left < 15
+        
+        # New: Pull Expiry Date
+        plan_expiry = active_sub.ends_at.isoformat() if active_sub and active_sub.ends_at else None
 
         today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
         today_created = 0
         generations_list = []
 
-        # A. Process Try-On & 360 Jobs (Lightweight Query)
         if category_filter in ["all", "tryon", "360"]:
             tryon_jobs = db.query(
                 models.TryOnJob.id, models.TryOnJob.category, models.TryOnJob.garment_image_url, 
@@ -94,7 +77,6 @@ async def get_dashboard_data(
                     "created_at": job.created_at.isoformat() if job.created_at else "", "_sort_dt": created_dt
                 })
 
-        # B. Process Outfit Jobs (Lightweight Query)
         if category_filter in ["all", "outfit"]:
             outfit_jobs = db.query(
                 models.OutfitJob.id, models.OutfitJob.styling_prompt, models.OutfitJob.result_image_url, 
@@ -118,7 +100,6 @@ async def get_dashboard_data(
                     "created_at": job.created_at.isoformat() if getattr(job, 'created_at', None) else "", "_sort_dt": created_dt 
                 })
 
-        # C. Process Studio Jobs (Lightweight Query)
         if category_filter in ["all", "models"]:
             studio_jobs = db.query(
                 models.StudioJob.id, models.StudioJob.job_type, models.StudioJob.input_data, 
@@ -168,7 +149,8 @@ async def get_dashboard_data(
                 "user": {
                     "username": current_user.username,
                     "email": current_user.email,
-                    "plan": "Pro Member Plan"
+                    "plan": plan_title,
+                    "plan_expiry": plan_expiry
                 },
                 "stats": {
                     "total_created": total_created,
@@ -190,14 +172,12 @@ async def get_dashboard_data(
 
     except Exception as e:
         logger.error(f"Error fetching dashboard data: {str(e)}", exc_info=True)
-        raise APIException(status_code=500, msg=f"Failed to load dashboard data.")
+        raise APIException(status_code=500, msg="Failed to load dashboard data.")
 
-# ==============================================================================
-# 2. UNIFIED GENERATION HISTORY API 
-# ==============================================================================
+
 @router.get("/studio-history", response_model=StandardResponse)
 async def get_studio_history(
-    model_type: Optional[str] = Query(None, description="Filter by model type: 'tryon', '360', 'outfit', or specific studio types"),
+    model_type: Optional[str] = Query(None, description="Filter by model type"),
     media_filter: Optional[str] = Query("all", description="'all', 'images', or 'videos'"),
     status_filter: Optional[str] = Query("completed", description="'all', 'completed', or 'generating'"),
     search: Optional[str] = Query(None, description="Search by prompt or title"),
@@ -207,16 +187,19 @@ async def get_studio_history(
     current_user: models.User = Depends(get_current_user)
 ):
     try:
-        fashn_credits = await fetch_fashn_credits()
-        remaining_credits = fashn_credits.get("total", 0)
-        total_credits_given = fashn_credits.get("subscription", 100) or 100
+        active_sub = db.query(models.UserSubscription).filter(
+            models.UserSubscription.user_id == current_user.id,
+            models.UserSubscription.status == models.UserSubscriptionStatus.ACTIVE
+        ).first()
+
+        remaining_credits = active_sub.credits_remaining if active_sub else 0
+        total_credits_given = active_sub.plan_snapshot.get("credits", 0) if active_sub else 0
 
         total_images = 0
         total_videos = 0
         completed_count = 0
         raw_generations_list = []
 
-        # 3A. Process Studio Jobs (Lightweight Query)
         studio_jobs = db.query(
             models.StudioJob.id, models.StudioJob.job_type, models.StudioJob.status,
             models.StudioJob.input_data, models.StudioJob.result_urls, models.StudioJob.created_at
@@ -224,12 +207,10 @@ async def get_studio_history(
 
         for job in studio_jobs:
             if job.status == models.JobStatus.COMPLETED: completed_count += 1
-            
             is_video = job.job_type == models.StudioJobType.IMAGE_TO_VIDEO
             if is_video: total_videos += 1
             
             urls = job.result_urls if isinstance(job.result_urls, list) else (json.loads(job.result_urls) if job.result_urls else [])
-            
             input_dict = job.input_data if isinstance(job.input_data, dict) else {}
             if not is_video:
                 img_count = len(urls) if urls else input_dict.get("num_images", 1)
@@ -247,7 +228,6 @@ async def get_studio_history(
                 "created_at": job.created_at.isoformat() if getattr(job, 'created_at', None) else "", "_sort_dt": created_dt
             })
 
-        # 3B. Process Try-On & 360 Jobs (Lightweight Query)
         tryon_jobs = db.query(
             models.TryOnJob.id, models.TryOnJob.category, models.TryOnJob.status,
             models.TryOnJob.garment_image_url, models.TryOnJob.result_image_urls, models.TryOnJob.created_at
@@ -285,7 +265,6 @@ async def get_studio_history(
                 "created_at": job.created_at.isoformat() if getattr(job, 'created_at', None) else "", "_sort_dt": created_dt
             })
 
-        # 3C. Process Outfit Jobs (Lightweight Query)
         outfit_jobs = db.query(
             models.OutfitJob.id, models.OutfitJob.styling_prompt, models.OutfitJob.status,
             models.OutfitJob.result_image_url, models.OutfitJob.person_image_url, models.OutfitJob.created_at
@@ -309,7 +288,6 @@ async def get_studio_history(
         total_jobs = len(studio_jobs) + len(tryon_jobs) + len(outfit_jobs)
         success_rate = round((completed_count / total_jobs * 100), 1) if total_jobs > 0 else 100.0
 
-        # Filtering
         filtered_list = raw_generations_list
         if media_filter == "videos": filtered_list = [j for j in filtered_list if j["media_format"] == "video"]
         elif media_filter == "images": filtered_list = [j for j in filtered_list if j["media_format"] == "image"]
@@ -326,12 +304,10 @@ async def get_studio_history(
             search_lower = search.strip().lower()
             filtered_list = [item for item in filtered_list if search_lower in item["title"].lower() or search_lower in item["model_type"].lower()]
 
-        # Sorting & Cleanup
         filtered_list.sort(key=lambda x: x["_sort_dt"], reverse=True)
         total_matching = len(filtered_list)
         for item in filtered_list: item.pop("_sort_dt", None)
 
-        # APPLY PAGINATION (FIXED)
         paginated_items = filtered_list[skip : skip + limit]
 
         return StandardResponse(
@@ -357,27 +333,31 @@ async def get_studio_history(
     except Exception as e:
         logger.error(f"Error fetching unified history: {str(e)}", exc_info=True)
         raise APIException(status_code=500, msg="Failed to load history.")
-    
-# ==============================================================================
-# 3. GET CREDITS 
-# ==============================================================================
+
+
 @router.get("/credits", response_model=StandardResponse)
-async def get_user_credits(current_user: models.User = Depends(get_current_user)):
+async def get_user_credits(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     try:
-        plan_name = getattr(current_user, "plan_name", "Free Tier")
-        
-        # Reuse the existing helper function instead of repeating the httpx call
-        fashn_credits = await fetch_fashn_credits()
+        active_sub = db.query(models.UserSubscription).filter(
+            models.UserSubscription.user_id == current_user.id,
+            models.UserSubscription.status == models.UserSubscriptionStatus.ACTIVE
+        ).first()
+
+        credits_left = active_sub.credits_remaining if active_sub else 0
+        plan_title = active_sub.plan_snapshot.get("title", "Free Tier") if active_sub else "Free Tier"
+        total_given = active_sub.plan_snapshot.get("credits", 0) if active_sub else 0
+        plan_expiry = active_sub.ends_at.isoformat() if active_sub and active_sub.ends_at else None
 
         return StandardResponse(
             status=True,
             msg="Credits retrieved successfully.",
             data={
-                "plan_name": plan_name,
-                "total_credits_remaining": fashn_credits.get("total", 0),
+                "plan_name": plan_title,
+                "total_credits_remaining": credits_left,
+                "plan_expiry": plan_expiry,
                 "fashn_breakdown": {
-                    "subscription": fashn_credits.get("subscription", 0),
-                    "on_demand": fashn_credits.get("on_demand", 0)
+                    "subscription": total_given,
+                    "on_demand": 0
                 }
             }
         )
