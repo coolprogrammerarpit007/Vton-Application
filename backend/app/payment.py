@@ -302,3 +302,60 @@ async def payment_callback(request: Request, db: Session = Depends(get_db)):
         db.commit()
         logger.warning(f"Transaction {txnid} processed with non-success status: '{status}'")
         return RedirectResponse(url=f"{frontend_base}/payment-status?status=failed&txnid={txnid}", status_code=303)
+    
+    
+    
+    
+# ==============================================================================
+# GET PAYMENT HISTORY
+# ==============================================================================
+from datetime import timedelta
+
+@router.get("/payment-history", response_model=schemas.PaymentHistoryListResponse)
+async def get_payment_history(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Fetches the user's successful payment transactions and enriches them 
+    with plan details, validation dates, and allocated credits.
+    """
+    try:
+        # 1. Fetch only successful transactions for the current user
+        transactions = db.query(models.PaymentTransaction).filter(
+            models.PaymentTransaction.user_id == current_user.id,
+            models.PaymentTransaction.status == models.TransactionStatus.SUCCESS
+        ).order_by(models.PaymentTransaction.created_at.desc()).all()
+
+        # 2. Cache subscription plans to map credits efficiently
+        # (Using title since product_info in payment_transactions stores the plan title)
+        plans_cache = {plan.title: plan.credits for plan in db.query(models.SubscriptionPlan).all()}
+
+        history_list = []
+        for txn in transactions:
+            purchase_dt = txn.created_at
+            # Assuming standard 30-day billing cycles
+            validation_dt = purchase_dt + timedelta(days=30) if purchase_dt else None
+            
+            # Format dates to "Jan 02 2026"
+            formatted_purchase = purchase_dt.strftime("%b %d %Y") if purchase_dt else "N/A"
+            formatted_validation = validation_dt.strftime("%b %d %Y") if validation_dt else "N/A"
+            
+            history_list.append({
+                "transaction_id": txn.txnid,
+                "plan_name": txn.product_info, # Contains the Plan Title (e.g., 'Gold Plan')
+                "purchase_amount": txn.amount,
+                "purchase_date": formatted_purchase,
+                "validation_date": formatted_validation,
+                "credits_purchased": plans_cache.get(txn.product_info, 0)
+            })
+
+        return schemas.PaymentHistoryListResponse(
+            status=True,
+            msg="Payment history retrieved successfully.",
+            data=history_list
+        )
+
+    except Exception as e:
+        logger.error(f"Error fetching payment history for user {current_user.id}: {str(e)}", exc_info=True)
+        raise APIException(status_code=500, msg="Failed to retrieve payment history.")

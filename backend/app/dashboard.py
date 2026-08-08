@@ -10,6 +10,7 @@ from .database import get_db
 from .auth import get_current_user
 from .schemas import StandardResponse
 from .exceptions import APIException
+from .gatekeeper import SubscriptionTransactionManager
 
 logger = logging.getLogger(__name__)
 
@@ -365,3 +366,51 @@ async def get_user_credits(db: Session = Depends(get_db), current_user: models.U
     except Exception as e:
         logger.error(f"Error fetching credits: {str(e)}", exc_info=True)
         raise APIException(status_code=500, msg="Failed to fetch credit information.")
+    
+    
+    
+    
+# ==============================================================================
+# 4. ESTIMATE CREDIT COST
+# ==============================================================================
+@router.get("/estimate-cost", response_model=StandardResponse)
+async def estimate_credit_cost(
+    task_type: str = Query(..., description="e.g., tryon, outerwear, video_generation, model_create, face_to_model, model_swap, change_background"),
+    resolution: Optional[str] = Query("480p", description="Used for video_generation (480p, 720p, 1080p)"),
+    image_quality: Optional[str] = Query("2k", description="Used for photoshoot_image (2k, 4k)"),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Returns the exact credit cost for a specific feature based on the user's active plan.
+    """
+    try:
+        active_sub = db.query(models.UserSubscription).filter(
+            models.UserSubscription.user_id == current_user.id,
+            models.UserSubscription.status == models.UserSubscriptionStatus.ACTIVE
+        ).first()
+
+        snapshot = active_sub.plan_snapshot if active_sub else {}
+        
+        # Package any dynamic modifiers needed for calculation
+        params = {
+            "resolution": resolution,
+            "image_quality": image_quality
+        }
+        
+        # Run through the central pricing matrix
+        cost = SubscriptionTransactionManager.calculate_cost(task_type, snapshot, params)
+        
+        return StandardResponse(
+            status=True,
+            msg="Credit cost estimated successfully.",
+            data={
+                "task_type": task_type,
+                "estimated_cost": cost,
+                "plan_name": snapshot.get("title", "Free Tier")
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"Error estimating credit cost for user {current_user.id}: {str(e)}", exc_info=True)
+        raise APIException(status_code=500, msg="Failed to calculate estimated cost.")

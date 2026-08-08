@@ -489,6 +489,31 @@ class UserSubscriptionHistory(Base):
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
+# --- User Billing Details ---
+class UserBillingDetail(Base):
+    __tablename__ = "user_billing_details"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True)
+    
+    full_name = Column(String(150), nullable=False)
+    email = Column(String(150), nullable=False)
+    phone_number = Column(String(20), nullable=False)
+    
+    address_line_1 = Column(String(255), nullable=True)
+    address_line_2 = Column(String(255), nullable=True)
+    city = Column(String(100), nullable=False)
+    state = Column(String(100), nullable=False)
+    pincode = Column(String(20), nullable=False)
+    
+    gst_number = Column(String(50), nullable=True)
+    company_name = Column(String(150), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    user = relationship("User", backref="billing_detail")
+
 
 
     

@@ -97,6 +97,7 @@ class SubscriptionPlanResponse(BaseModel):
 class StandardSubscriptionPlanListResponse(BaseModel):
     status: bool
     msg: str
+    has_billing_details: bool = False  # NEW: Top-level boolean flag
     data: List[SubscriptionPlanResponse]
 # --- Payment Schemas ---
 class PaymentInitiateRequest(BaseModel):
@@ -289,3 +290,47 @@ class UserSubscriptionHistoryResponse(BaseModel):
     class Config:
         from_attributes = True
 # *************************************************************************************
+
+
+
+# ************************* Schemas for Billing Details ******************************
+
+# --- Billing Detail  and Purchase history Schemas ---
+class BillingDetailCreate(BaseModel):
+    full_name: str = Field(..., min_length=2, max_length=150)
+    email: EmailStr
+    phone_number: str = Field(..., min_length=10, max_length=20)
+    address_line_1: Optional[str] = None
+    address_line_2: Optional[str] = None
+    city: str = Field(..., min_length=2, max_length=100)
+    state: str = Field(..., min_length=2, max_length=100)
+    pincode: str = Field(..., min_length=4, max_length=20)
+    gst_number: Optional[str] = None
+    company_name: Optional[str] = None
+
+class BillingDetailResponse(BillingDetailCreate):
+    id: int
+    user_id: int
+    created_at: datetime
+    updated_at: datetime
+    
+    class Config:
+        from_attributes = True
+        
+        
+# --- Payment History Schemas ---
+class PaymentHistoryItem(BaseModel):
+    transaction_id: str
+    plan_name: str
+    purchase_amount: str
+    purchase_date: str      # Changed from datetime to str
+    validation_date: str    # Changed from datetime to str
+    credits_purchased: int
+
+class PaymentHistoryListResponse(BaseModel):
+    status: bool
+    msg: str
+    data: List[PaymentHistoryItem]
+        
+        
+# ***************************************************************************************

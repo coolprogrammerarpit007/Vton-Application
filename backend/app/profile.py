@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from . import models
 from .database import get_db
 from .auth import get_current_user
-from .schemas import StandardResponse
+from .schemas import StandardResponse,BillingDetailCreate,BillingDetailResponse
 from .exceptions import APIException
 from .config import settings  
 
@@ -158,3 +158,80 @@ async def upload_avatar_photo(
         db.rollback()
         logger.error(f"Error uploading avatar: {str(e)}", exc_info=True)
         raise APIException(status_code=500, msg="Failed to update avatar photo.")
+    
+    
+    
+    
+# ==============================================================================
+# 3. CREATE / UPDATE BILLING DETAILS
+# ==============================================================================
+@router.post("/billing", response_model=StandardResponse)
+async def upsert_billing_details(
+    payload: BillingDetailCreate, # Accepts JSON payload based on schema
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    try:
+        # Check if the user already has a billing record
+        billing = db.query(models.UserBillingDetail).filter(
+            models.UserBillingDetail.user_id == current_user.id
+        ).first()
+        
+        if billing:
+            # Update existing record
+            for key, value in payload.model_dump().items():
+                setattr(billing, key, value)
+            msg = "Billing details updated successfully."
+        else:
+            # Create a new record
+            billing = models.UserBillingDetail(
+                user_id=current_user.id,
+                **payload.model_dump()
+            )
+            db.add(billing)
+            msg = "Billing details saved successfully."
+            
+        db.commit()
+        db.refresh(billing)
+        
+        return StandardResponse(
+            status=True,
+            msg=msg,
+            data= BillingDetailResponse.model_validate(billing).model_dump()
+        )
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error saving billing details for user {current_user.id}: {str(e)}")
+        raise APIException(status_code=500, msg="Failed to process billing details.")
+
+
+# ==============================================================================
+# 4. GET BILLING DETAILS
+# ==============================================================================
+@router.get("/billing", response_model=StandardResponse)
+async def get_billing_details(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    try:
+        billing = db.query(models.UserBillingDetail).filter(
+            models.UserBillingDetail.user_id == current_user.id
+        ).first()
+        
+        if not billing:
+            return StandardResponse(
+                status=True, 
+                msg="No billing details found for this user.", 
+                data=None
+            )
+            
+        return StandardResponse(
+            status=True, 
+            msg="Billing details retrieved successfully.", 
+            data=BillingDetailResponse.model_validate(billing).model_dump()
+        )
+        
+    except Exception as e:
+        logger.error(f"Error fetching billing details for user {current_user.id}: {str(e)}")
+        raise APIException(status_code=500, msg="Failed to retrieve billing details.")
