@@ -331,6 +331,26 @@ class PaymentHistoryListResponse(BaseModel):
     status: bool
     msg: str
     data: List[PaymentHistoryItem]
+    
+    
+# --- Top-Up Schemas ---
+class PaymentTopupInitiateRequest(BaseModel):
+    credits: int = Field(..., ge=1, description="Number of credits to purchase, e.g., 10")
+    amount: float = Field(..., ge=1.0, description="Amount in INR, e.g., 100.00")
+    # phone: str = Field(default="9351469994", min_length=10, max_length=15)
+
+class TopupOptionItem(BaseModel):
+    id: int
+    title: str
+    credits: int
+    amount: float
+    description: str
+
+class StandardTopupOptionsResponse(BaseModel):
+    status: bool
+    msg: str
+    credit_rate:int
+    data: List[TopupOptionItem]
         
         
 # ***************************************************************************************

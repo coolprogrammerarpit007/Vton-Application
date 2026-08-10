@@ -31,12 +31,23 @@ async def get_dashboard_data(
             models.UserSubscription.status == models.UserSubscriptionStatus.ACTIVE
         ).first()
 
-        credits_left = active_sub.credits_remaining if active_sub else 0
-        plan_snapshot = active_sub.plan_snapshot if active_sub else {}
-        plan_title = plan_snapshot.get("title", "Free Member")
-        credits_max = plan_snapshot.get("credits", 100) or 100
+        # --- CLEANED FALLBACK LOGIC ---
+        if active_sub:
+            credits_left = active_sub.credits_remaining
+            plan_snapshot = active_sub.plan_snapshot or {}
+            plan_title = plan_snapshot.get("title", "Free Plan")
+            credits_max = plan_snapshot.get("credits", 3)
+            plan_expiry = active_sub.ends_at.isoformat() if active_sub.ends_at else None
+        else:
+            # Fallback for brand new Free Tier users
+            credits_left = 3
+            plan_snapshot = {}
+            plan_title = "Free Plan"
+            credits_max = 3
+            plan_expiry = None
+            
+            
         credits_low_warning = credits_left < 15
-        
         # New: Pull Expiry Date
         plan_expiry = active_sub.ends_at.isoformat() if active_sub and active_sub.ends_at else None
 
@@ -193,8 +204,9 @@ async def get_studio_history(
             models.UserSubscription.status == models.UserSubscriptionStatus.ACTIVE
         ).first()
 
-        remaining_credits = active_sub.credits_remaining if active_sub else 0
-        total_credits_given = active_sub.plan_snapshot.get("credits", 0) if active_sub else 0
+        # Update fallbacks to 3
+        remaining_credits = active_sub.credits_remaining if active_sub else 3
+        total_credits_given = active_sub.plan_snapshot.get("credits", 3) if active_sub else 3
 
         total_images = 0
         total_videos = 0

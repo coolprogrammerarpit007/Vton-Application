@@ -555,6 +555,17 @@ class PaymentTransaction(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     user = relationship("User", backref="payment_transactions")
+    
+    
+# ***************** Topup Options Table *****************************************
+class TopupOption(Base):
+    __tablename__ = "topup_options"
+
+    id = Column(BigInteger, primary_key=True, index=True)
+    title = Column(String(100), nullable=False)
+    credits = Column(DECIMAL, nullable=False)
+    amount = Column(DECIMAL(10, 2), nullable=False)
+    description = Column(Text, nullable=False)
 
 # *********************************************** End *********************************************************
     

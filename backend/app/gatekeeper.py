@@ -2,6 +2,7 @@ import logging
 from typing import Optional, Dict, Any
 from fastapi import Depends
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 
 from . import models
@@ -10,6 +11,152 @@ from .auth import get_current_user
 from .exceptions import APIException
 
 logger = logging.getLogger(__name__)
+from datetime import datetime, timedelta
+
+def extract_enum_or_val(obj, attr_name: str, default=None):
+    val = getattr(obj, attr_name, default)
+    if hasattr(val, "value"):
+        return val.value
+    return val
+
+
+def auto_provision_free_tier(db: Session, user_id: int) -> models.UserSubscription:
+    """
+    Provisions a Free Tier Subscription (3 credits, Silver features) 
+    in the database for first-time users.
+    """
+    silver_plan = db.query(models.SubscriptionPlan).filter(
+        (func.lower(func.trim(models.SubscriptionPlan.plan_name)).like("%silver%")) |
+        (func.lower(func.trim(models.SubscriptionPlan.title)).like("%silver%")),
+        models.SubscriptionPlan.is_active == True
+    ).first()
+
+    if silver_plan:
+        plan_id = silver_plan.id
+        snapshot = {
+            "subscription_plan_id": silver_plan.id,
+            "plan_name": "Free",
+            "title": "Free Plan",
+            "price": 0.0,
+            "credits": 3,
+            "closet_limit": getattr(silver_plan, "closet_limit", 10),
+            "virtual_try_on": getattr(silver_plan, "virtual_try_on", True),
+            "view_360_mode": extract_enum_or_val(silver_plan, "view_360_mode", "single_image"),
+            "change_background": getattr(silver_plan, "change_background", True),
+            "model_swap": getattr(silver_plan, "model_swap", False),
+            "product_to_model": getattr(silver_plan, "product_to_model", True),
+            "outerwear_enabled": getattr(silver_plan, "outerwear_enabled", False),
+            "image_to_video_resolution": extract_enum_or_val(silver_plan, "image_to_video_resolution", "480p"),
+            "image_to_video_max_count": getattr(silver_plan, "image_to_video_max_count", 1),
+            "image_to_video_max_seconds": getattr(silver_plan, "image_to_video_max_seconds", 10),
+            "smart_crop": getattr(silver_plan, "smart_crop", True),
+            "face_to_model": getattr(silver_plan, "face_to_model", False),
+            "create_model_enabled": getattr(silver_plan, "create_model_enabled", False),
+            "create_model_max": getattr(silver_plan, "create_model_max", None),
+            "video_quality": extract_enum_or_val(silver_plan, "video_quality", "480p"),
+            "chat_support_enabled": getattr(silver_plan, "chat_support_enabled", False),
+            "chat_support_response_hours": None,
+            "model_creation_limit": None,
+            "special_offer": False,
+            "early_access": False,
+            "image_quality": extract_enum_or_val(silver_plan, "image_quality", "2k"),
+            "image_retention_hours": getattr(silver_plan, "image_retention_hours", 24),
+        }
+    else:
+        plan_id = 1
+        snapshot = {
+            "subscription_plan_id": 1,
+            "plan_name": "Free",
+            "title": "Free Plan",
+            "price": 0.0,
+            "credits": 3,
+            "closet_limit": 10,
+            "virtual_try_on": True,
+            "view_360_mode": "single_image",
+            "change_background": True,
+            "model_swap": False,
+            "product_to_model": True,
+            "outerwear_enabled": False,
+            "image_to_video_resolution": "480p",
+            "image_to_video_max_count": 1,
+            "image_to_video_max_seconds": 10,
+            "smart_crop": True,
+            "face_to_model": False,
+            "create_model_enabled": False,
+            "create_model_max": None,
+            "video_quality": "480p",
+            "chat_support_enabled": False,
+            "chat_support_response_hours": None,
+            "model_creation_limit": None,
+            "special_offer": False,
+            "early_access": False,
+            "image_quality": "2k",
+            "image_retention_hours": 24,
+        }
+
+    # 1. Define the 30-day cycle for the Free Tier
+    now = datetime.utcnow()
+    cycle_end = now + timedelta(days=30)
+    
+    free_sub = models.UserSubscription(
+        user_id=user_id,
+        subscription_plan_id=plan_id,
+        plan_snapshot=snapshot,
+        credits_remaining=3,
+        status=models.UserSubscriptionStatus.ACTIVE,
+        starts_at=now,
+        ends_at=cycle_end,
+        notes="Auto-assigned Free Tier (3 credits) on first feature usage"
+    )
+    
+    db.add(free_sub)
+    db.flush() # Flush to generate the free_sub.id needed for the usage tables
+    
+    # 2. Initialize Volume Quota for Model Creation
+    model_limit = snapshot.get("model_creation_limit")
+    db.add(models.UserPlanResourceUsage(
+        user_id=user_id,
+        user_subscription_id=free_sub.id,
+        resource_key=models.ResourceKey.MODEL_CREATION,
+        limit_value=model_limit,
+        used_value=0,
+        period_starts_at=now,
+        period_ends_at=cycle_end
+    ))
+
+    # 3. Initialize Volume Quota for Image-to-Video
+    video_limit = snapshot.get("image_to_video_max_count")
+    db.add(models.UserPlanResourceUsage(
+        user_id=user_id,
+        user_subscription_id=free_sub.id,
+        resource_key=models.ResourceKey.IMAGE_TO_VIDEO,
+        limit_value=video_limit,
+        used_value=0,
+        period_starts_at=now,
+        period_ends_at=cycle_end
+    ))
+
+    # 4. Write the Assignment Log to History
+    db.add(models.UserSubscriptionHistory(
+        user_id=user_id,
+        user_subscription_id=free_sub.id,
+        subscription_plan_id=plan_id,
+        event=models.SubscriptionEvent.ASSIGNED,
+        plan_snapshot=snapshot,
+        credits_at_event=3
+    ))
+    try:
+        db.commit()
+        db.refresh(free_sub)
+        logger.info(f"Auto-provisioned Free Tier (3 credits) for User ID {user_id}")
+        return free_sub
+    except Exception:
+        db.rollback()
+        # Fallback query in case of concurrent insert
+        return db.query(models.UserSubscription).filter(
+            models.UserSubscription.user_id == user_id,
+            models.UserSubscription.status == models.UserSubscriptionStatus.ACTIVE
+        ).first()
 class PlanGatekeeper:
     """
     FastAPI Dependency to enforce Subscription Plan rules, Feature Flags, and Volume Limits.
@@ -43,13 +190,19 @@ class PlanGatekeeper:
             models.UserSubscription.user_id == current_user.id,
             models.UserSubscription.status == models.UserSubscriptionStatus.ACTIVE
         ).first()
-
+        
+        
+        # Auto-provision Free Tier for first-time users
         if not subscription:
-            logger.warning(f"Gatekeeper Block: User {current_user.id} has no active subscription.")
-            raise APIException(
-                status_code=200,
-                msg="No active subscription found. Please purchase a plan to continue."
-            )
+            subscription = auto_provision_free_tier(db, current_user.id)
+
+        snapshot = subscription.plan_snapshot
+        # if not subscription:
+        #     logger.warning(f"Gatekeeper Block: User {current_user.id} has no active subscription.")
+        #     raise APIException(
+        #         status_code=200,
+        #         msg="No active subscription found. Please purchase a plan to continue."
+        #     )
 
         snapshot = subscription.plan_snapshot
 
@@ -129,6 +282,7 @@ class SubscriptionTransactionManager:
         and the specific parameters requested (e.g., 4K vs 2K).
         """
         plan_name = snapshot.get("plan_name", "").lower()
+        is_silver_or_free = "silver" in plan_name or "free" in plan_name
 
         if task_type == "photoshoot_image":
             quality = params.get("image_quality", "2k")
@@ -140,7 +294,7 @@ class SubscriptionTransactionManager:
         elif task_type == "video_generation":
             resolution = params.get("resolution", "480p")
             if resolution == "480p":
-                return 6 if "silver" in plan_name else (5 if "gold" in plan_name else 4)
+                return 6 if is_silver_or_free else (5 if "gold" in plan_name else 4)
             elif resolution == "720p":
                 return 8 if "gold" in plan_name else 5
             elif resolution == "1080p":
@@ -249,6 +403,7 @@ class SubscriptionTransactionManager:
                 models.UserPlanResourceUsage.user_subscription_id == subscription.id,
                 models.UserPlanResourceUsage.resource_key == quota_key
             ).first()
+            
             
             if usage_record and usage_record.used_value > 0:
                 usage_record.used_value -= 1

@@ -40,9 +40,9 @@ async def get_user_profile(
             models.UserSubscription.status == models.UserSubscriptionStatus.ACTIVE
         ).first()
 
-        credits_left = active_sub.credits_remaining if active_sub else 0
+        credits_left = active_sub.credits_remaining if active_sub else 3
         plan_snapshot = active_sub.plan_snapshot if active_sub else {}
-        plan_badge = plan_snapshot.get("title", "Free Member")
+        plan_badge = plan_snapshot.get("title", "Free Plan") if active_sub else "Free Plan"
         plan_expiry = active_sub.ends_at.isoformat() if active_sub and active_sub.ends_at else None
 
         total_images = 0
