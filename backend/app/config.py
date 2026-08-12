@@ -5,9 +5,9 @@ class Settings(BaseSettings):
     DB_CONNECTION: str = "mysql"
     DB_HOST: str = "localhost"
     DB_PORT: int = 3306
-    DB_DATABASE: str = "microc_vton"
-    DB_USERNAME: str = "microc_vton"
-    DB_PASSWORD: str = "ZsG6AZ1bAYeF"
+    DB_DATABASE: str = ""
+    DB_USERNAME: str = ""
+    DB_PASSWORD: str = ""
     FASHN_API_KEY: str
     
     # --- PayU Configuration ---
