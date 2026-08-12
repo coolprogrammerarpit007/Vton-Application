@@ -10,81 +10,113 @@ from sqlalchemy import func
 from . import models
 from .database import get_db, SessionLocal
 from .auth import get_current_user
-from .utils import save_upload_file,download_and_save_remote_image
-from .fashn_service import trigger_generic_fashn_job, check_vton_status
+from .utils import save_upload_file, download_and_save_remote_image
+from .fashn_service import trigger_generic_fashn_job, check_vton_status, ensure_fashn_credits_available
 from .schemas import StandardResponse
 from .exceptions import APIException
 from .config import settings
-from .gatekeeper import PlanGatekeeper, SubscriptionTransactionManager # NEW: Subscription & Ledger injections
-
+from .gatekeeper import PlanGatekeeper, SubscriptionTransactionManager
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/studio", tags=["AI Creative Studio"])
 
-# Dynamically set Base URL from centralized configuration
 base_url = settings.BACKEND_URL.rstrip("/")
 
 
 def validate_image(file: UploadFile):
     if not file.content_type.startswith("image/"):
-        raise APIException(status_code=400, msg="Invalid file format. Must be an image.")
+        raise APIException(status_code=200, msg="Invalid file format. Must be an image.")
+
 
 async def process_upload(file: UploadFile) -> str:
     validate_image(file)
     filename = save_upload_file(file)
     return f"{base_url}/static_uploads/{filename}"
 
+
+def resolve_model_image_url(
+    db: Session,
+    user_id: int,
+    generated_model_job_id: Optional[int] = None,
+    upload_file: Optional[UploadFile] = None
+) -> str:
+    if generated_model_job_id:
+        studio_job = db.query(models.StudioJob).filter(
+            models.StudioJob.id == generated_model_job_id,
+            models.StudioJob.user_id == user_id,
+            models.StudioJob.job_type == models.StudioJobType.MODEL_CREATE,
+            models.StudioJob.status == models.JobStatus.COMPLETED
+        ).first()
+
+        if not studio_job or not studio_job.result_urls:
+            raise APIException(status_code=200, msg="Selected generated model not found or job has not completed yet.")
+
+        urls = studio_job.result_urls if isinstance(studio_job.result_urls, list) else json.loads(studio_job.result_urls)
+        if not urls:
+            raise APIException(status_code=200, msg="No images found in the selected generated model.")
+
+        return urls[0]
+
+    elif upload_file:
+        validate_image(upload_file)
+        filename = save_upload_file(upload_file)
+        return f"{base_url}/static_uploads/{filename}"
+
+    raise APIException(status_code=200, msg="Must provide either an uploaded image or a valid generated_model_job_id.")
+
+
 # ==========================================
-# 1. PRODUCT TO MODEL (Garment -> AI Human)
+# 1. PRODUCT TO MODEL
 # ==========================================
 @router.post("/product-to-model", response_model=StandardResponse)
 async def product_to_model(
-    garment_image: UploadFile = File(...),                                 
-    image_prompt: Optional[UploadFile] = File(None),                       
-    face_reference: Optional[UploadFile] = File(None),                     
-    background_reference: Optional[UploadFile] = File(None),               
-    prompt: Optional[str] = Form(None),                                    
-    face_reference_mode: str = Form("match_reference"),                    
-    aspect_ratio: Optional[str] = Form(None),                              
-    resolution: str = Form("1k"),                                          
-    generation_mode: Optional[str] = Form(None),                           
-    num_images: int = Form(1),                                             
-    output_format: str = Form("png"),                                      
+    garment_image: UploadFile = File(...),
+    generated_model_job_id: Optional[int] = Form(None),
+    image_prompt: Optional[UploadFile] = File(None),
+    face_reference: Optional[UploadFile] = File(None),
+    background_reference: Optional[UploadFile] = File(None),
+    prompt: Optional[str] = Form(None),
+    face_reference_mode: str = Form("match_reference"),
+    aspect_ratio: Optional[str] = Form(None),
+    resolution: str = Form("1k"),
+    generation_mode: Optional[str] = Form(None),
+    num_images: int = Form(1),
+    output_format: str = Form("png"),
     db: Session = Depends(get_db),
-    # current_user: models.User = Depends(get_current_user),
-    # Gatekeeper: Must have active plan and product_to_model feature
     subscription: models.UserSubscription = Depends(PlanGatekeeper(feature_flag="product_to_model"))
 ):
-    
-    # Enforce resolution rules
-    if resolution in ["2k", "4k"] and subscription.plan_snapshot.get("image_quality", "2k") == "2k" and resolution == "4k":
-        raise APIException(status_code=403, msg="4K render quality requires the Gold or Platinum plan.")
-    
-    # Calculate dynamic cost & Deduct
+    await ensure_fashn_credits_available(min_required=1.0)
+
+    if resolution == "4k" and subscription.plan_snapshot.get("image_quality", "2k") == "2k":
+        raise APIException(status_code=200, msg="4K render quality requires the Gold or Platinum plan.")
+
     cost = SubscriptionTransactionManager.calculate_cost(
         "photoshoot_image", subscription.plan_snapshot, {"image_quality": resolution}
     )
-    
+
     garment_url = await process_upload(garment_image)
-    
+
     input_data = {
         "product_image": garment_url,
         "resolution": resolution,
         "num_images": num_images,
         "output_format": output_format
     }
-    
-    if image_prompt:
+
+    if generated_model_job_id:
+        model_url = resolve_model_image_url(db, subscription.user_id, generated_model_job_id=generated_model_job_id)
+        input_data["image_prompt"] = model_url
+    elif image_prompt:
         input_data["image_prompt"] = await process_upload(image_prompt)
-        
+
     if background_reference:
         input_data["background_reference"] = await process_upload(background_reference)
-        
+
     if face_reference:
         input_data["face_reference"] = await process_upload(face_reference)
         input_data["face_reference_mode"] = face_reference_mode
-        
+
     if prompt:
         input_data["prompt"] = prompt
     if aspect_ratio:
@@ -95,13 +127,12 @@ async def product_to_model(
     db_job = models.StudioJob(
         user_id=subscription.user_id,
         job_type=models.StudioJobType.PRODUCT_TO_MODEL,
-        input_data=input_data 
+        input_data=input_data
     )
     db.add(db_job)
     db.commit()
     db.refresh(db_job)
-    
-    # Atomic Credit Deduction
+
     SubscriptionTransactionManager.deduct_resources(
         db, subscription, cost, "product_to_model", reference_id=db_job.id
     )
@@ -114,41 +145,41 @@ async def product_to_model(
         db_job.fashn_job_id = fashn_id
         db_job.status = models.JobStatus.PROCESSING
         db.commit()
-        
+
         return StandardResponse(
-            status=True, 
-            msg="Product-to-Model job started", 
+            status=True,
+            msg="Product-to-Model job started",
             data={"job_id": db_job.id, "status": db_job.status.value, "credits_deducted": cost}
         )
-       
+
     except Exception as e:
         db.rollback()
-        # Refund on immediate failure
         SubscriptionTransactionManager.refund_resources(
             db, subscription, cost, "product_to_model", reference_id=db_job.id, reason=str(e)
         )
-        raise APIException(status_code=500, msg=f"AI Engine failed: {str(e)}")
+        raise APIException(status_code=200, msg=f"AI Engine failed: {str(e)}")
+
 
 # ==========================================
-# 2. MODEL SWAP (Change face/body type)
+# 2. MODEL SWAP
 # ==========================================
 @router.post("/model-swap", response_model=StandardResponse)
 async def model_swap(
-    original_image: UploadFile = File(...),
-    target_face_image: Optional[UploadFile] = File(None),  
-    prompt: Optional[str] = Form(None),                    
-    face_reference_mode: str = Form("match_reference"),    
-    resolution: str = Form("1k"),                          
-    generation_mode: Optional[str] = Form(None),           
-    num_images: int = Form(1),                             
+    original_image: Optional[UploadFile] = File(None),
+    generated_model_job_id: Optional[int] = Form(None),
+    target_face_image: Optional[UploadFile] = File(None),
+    prompt: Optional[str] = Form(None),
+    face_reference_mode: str = Form("match_reference"),
+    resolution: str = Form("1k"),
+    generation_mode: Optional[str] = Form(None),
+    num_images: int = Form(1),
     db: Session = Depends(get_db),
-     # Gatekeeper: Restricts to Gold/Platinum
-    subscription: models.UserSubscription = Depends(PlanGatekeeper(feature_flag="model_swap")),
-
+    subscription: models.UserSubscription = Depends(PlanGatekeeper(feature_flag="model_swap"))
 ):
+    await ensure_fashn_credits_available(min_required=1.0)
     cost = SubscriptionTransactionManager.calculate_cost("model_swap", subscription.plan_snapshot)
-    orig_url = await process_upload(original_image)
-    
+    orig_url = resolve_model_image_url(db, subscription.user_id, generated_model_job_id, original_image)
+
     face_url = None
     if target_face_image:
         face_url = await process_upload(target_face_image)
@@ -158,7 +189,7 @@ async def model_swap(
         "resolution": resolution,
         "num_images": num_images
     }
-    
+
     if face_url:
         input_data["face_reference"] = face_url
         input_data["face_reference_mode"] = face_reference_mode
@@ -168,65 +199,66 @@ async def model_swap(
         input_data["generation_mode"] = generation_mode
 
     db_job = models.StudioJob(
-        user_id=subscription.user_id, job_type=models.StudioJobType.MODEL_SWAP, input_data=input_data  
+        user_id=subscription.user_id, job_type=models.StudioJobType.MODEL_SWAP, input_data=input_data
     )
     db.add(db_job)
     db.commit()
     db.refresh(db_job)
-    
+
     SubscriptionTransactionManager.deduct_resources(db, subscription, cost, "model_swap", reference_id=db_job.id)
 
     try:
         fashn_id = await trigger_generic_fashn_job(
             model_name="model-swap",
-            inputs=input_data  
+            inputs=input_data
         )
-        
         db_job.fashn_job_id = fashn_id
         db_job.status = models.JobStatus.PROCESSING
         db.commit()
-        
+
         return StandardResponse(status=True, msg="Model Swap job started", data={"job_id": db_job.id, "credits_deducted": cost})
-        
+
     except Exception as e:
         db.rollback()
         SubscriptionTransactionManager.refund_resources(db, subscription, cost, "model_swap", reference_id=db_job.id, reason=str(e))
-        raise APIException(status_code=500, msg=str(e))
+        raise APIException(status_code=200, msg=str(e))
+
 
 # ==========================================
-# 3. IMAGE TO VIDEO (Static -> Motion)
+# 3. IMAGE TO VIDEO
 # ==========================================
 @router.post("/image-to-video", response_model=StandardResponse)
 async def image_to_video(
-    source_image: UploadFile = File(...),
-    end_image: Optional[UploadFile] = File(None),          
-    motion_prompt: Optional[str] = Form(None),             
-    duration: int = Form(5),                               
-    resolution: Optional[str] = Form(None),                      
+    source_image: Optional[UploadFile] = File(None),
+    generated_model_job_id: Optional[int] = Form(None),
+    end_image: Optional[UploadFile] = File(None),
+    motion_prompt: Optional[str] = Form(None),
+    duration: int = Form(5),
+    resolution: Optional[str] = Form(None),
     db: Session = Depends(get_db),
     subscription: models.UserSubscription = Depends(PlanGatekeeper(resource_key=models.ResourceKey.IMAGE_TO_VIDEO))
 ):
-    # FIX: Sanitize input from frontend to ensure it matches backend dictionaries
+    await ensure_fashn_credits_available(min_required=1.0)
+
     if resolution and not resolution.endswith("p"):
         resolution = f"{resolution}p"
-        
+
     if not resolution:
         resolution = subscription.plan_snapshot.get("video_quality", "480p")
 
-    # Explicitly enforce that 1080p requires the Platinum plan
     if resolution == "1080p" and "platinum" not in subscription.plan_snapshot.get("plan_name", "").lower():
         raise APIException(status_code=200, msg="1080p Pro video rendering is exclusively available on the Platinum plan.")
-    
-    # Enforce standard video resolution limits
+
     quality_map = {"480p": 1, "720p": 2, "1080p": 3}
     user_max = quality_map.get(subscription.plan_snapshot.get("video_quality", "480p"), 1)
     req_min = quality_map.get(resolution, 1)
-    
+
     if req_min > user_max:
-         raise APIException(status_code=200, msg=f"Your plan is limited to {subscription.plan_snapshot.get('video_quality')} video exports.")
+        raise APIException(status_code=200, msg=f"Your plan is limited to {subscription.plan_snapshot.get('video_quality')} video exports.")
 
     cost = SubscriptionTransactionManager.calculate_cost("video_generation", subscription.plan_snapshot, {"resolution": resolution})
-    source_url = await process_upload(source_image)
+    source_url = resolve_model_image_url(db, subscription.user_id, generated_model_job_id, source_image)
+
     end_url = None
     if end_image:
         end_url = await process_upload(end_image)
@@ -236,24 +268,23 @@ async def image_to_video(
         "duration": duration,
         "resolution": resolution
     }
-    
+
     if end_url:
         input_data["end_image"] = end_url
     if motion_prompt:
         input_data["prompt"] = motion_prompt
 
     db_job = models.StudioJob(
-        user_id=subscription.user_id, job_type=models.StudioJobType.IMAGE_TO_VIDEO, input_data=input_data  
+        user_id=subscription.user_id, job_type=models.StudioJobType.IMAGE_TO_VIDEO, input_data=input_data
     )
     db.add(db_job)
     db.commit()
     db.refresh(db_job)
-    
-    # Deduct credits AND increment video quota simultaneously 
+
     SubscriptionTransactionManager.deduct_resources(
         db, subscription, cost, "image_to_video", quota_key=models.ResourceKey.IMAGE_TO_VIDEO, reference_id=db_job.id
     )
-    
+
     try:
         fashn_id = await trigger_generic_fashn_job(model_name="image-to-video", inputs=input_data)
         db_job.fashn_job_id = fashn_id
@@ -265,9 +296,11 @@ async def image_to_video(
         SubscriptionTransactionManager.refund_resources(
             db, subscription, cost, "image_to_video", quota_key=models.ResourceKey.IMAGE_TO_VIDEO, reference_id=db_job.id, reason=str(e)
         )
-        raise APIException(status_code=500, msg=str(e))
+        raise APIException(status_code=200, msg=str(e))
+
+
 # ==============================================================================
-# BACKGROUND WORKER: 2-Step Advanced Background Replacement Chain
+# BACKGROUND WORKER: Advanced Background Replacement Chain
 # ==============================================================================
 async def process_advanced_background_chain(
     job_id: int, 
@@ -288,7 +321,6 @@ async def process_advanced_background_chain(
         job.status = models.JobStatus.PROCESSING
         db.commit()
 
-        logger.info(f"Job {job_id} [Step 1]: Stripping original background...")
         bg_remove_id = await trigger_generic_fashn_job(
             model_name="background-remove",
             inputs={"image": original_url}
@@ -304,8 +336,6 @@ async def process_advanced_background_chain(
             elif status == "failed":
                 raise Exception("FASHN 'background-remove' step failed.")
 
-        logger.info(f"Job {job_id} [Step 2]: Generating new background via Edit model...")
-        
         edit_inputs = {
             "image": transparent_img_url, 
             "prompt": harmonized_prompt,
@@ -323,21 +353,20 @@ async def process_advanced_background_chain(
         
         final_local_urls = []
         while True:
-                await asyncio.sleep(5) 
-                status, output = await check_vton_status(bg_gen_id)
-                if status == "completed":
-                    final_remote_urls = output if isinstance(output, list) else [output]
-                    for remote in final_remote_urls:
-                        f_name = await download_and_save_remote_image(remote)
-                        final_local_urls.append(f"{base_url}/static_uploads/{f_name}")
-                    break
-                elif status == "failed":
-                    raise Exception("FASHN 'edit' step failed.")
+            await asyncio.sleep(4) 
+            status, output = await check_vton_status(bg_gen_id)
+            if status == "completed":
+                final_remote_urls = output if isinstance(output, list) else [output]
+                for remote in final_remote_urls:
+                    f_name = await download_and_save_remote_image(remote)
+                    final_local_urls.append(f"{base_url}/static_uploads/{f_name}")
+                break
+            elif status == "failed":
+                raise Exception("FASHN 'edit' step failed.")
 
         job.result_urls = final_local_urls
         job.status = models.JobStatus.COMPLETED
         db.commit()
-        logger.info(f"Job {job_id}: Advanced Background replacement completed successfully!")
 
     except Exception as e:
         logger.error(f"Background Change Chain Error on Job {job_id}: {str(e)}", exc_info=True)
@@ -345,42 +374,46 @@ async def process_advanced_background_chain(
             job.status = models.JobStatus.FAILED
             db.commit()
             
-        # Refund user via background DB session if job fails
-        sub = db.query(models.UserSubscription).filter(models.UserSubscription.user_id == user_id, models.UserSubscription.status == models.UserSubscriptionStatus.ACTIVE).first()
+        sub = db.query(models.UserSubscription).filter(
+            models.UserSubscription.user_id == user_id, 
+            models.UserSubscription.status == models.UserSubscriptionStatus.ACTIVE
+        ).first()
         if sub:
             SubscriptionTransactionManager.refund_resources(db, sub, cost, "change_background", reference_id=job_id, reason=str(e))
     finally:
         db.close()
-    
-# ==============================================================================
-# API ENDPOINT: Request Background Change
-# ==============================================================================
+
+
+# ==========================================
+# 4. CHANGE BACKGROUND
+# ==========================================
 @router.post("/change-background", response_model=StandardResponse)
 async def change_background(
     background_tasks: BackgroundTasks,
-    original_image: UploadFile = File(...),                                      
-    new_background_prompt: str = Form(...),                                      
-    reference_bg_image: Optional[UploadFile] = File(None),                       
-    resolution: str = Form("2k"),                                                
-    generation_mode: str = Form("quality"),                                      
+    original_image: Optional[UploadFile] = File(None),
+    generated_model_job_id: Optional[int] = Form(None),
+    new_background_prompt: str = Form(...),
+    reference_bg_image: Optional[UploadFile] = File(None),
+    resolution: str = Form("2k"),
+    generation_mode: str = Form("quality"),
     db: Session = Depends(get_db),
     subscription: models.UserSubscription = Depends(PlanGatekeeper(feature_flag="change_background"))
 ):
-    
+    await ensure_fashn_credits_available(min_required=1.0)
     cost = SubscriptionTransactionManager.calculate_cost("change_background", subscription.plan_snapshot)
-    
+
     try:
-        orig_url = await process_upload(original_image)
+        orig_url = resolve_model_image_url(db, subscription.user_id, generated_model_job_id, original_image)
         ref_bg_url = None
         if reference_bg_image:
             ref_bg_url = await process_upload(reference_bg_image)
     except Exception as e:
-        raise APIException(status_code=400, msg=f"Failed to process image uploads: {str(e)}")
-    
+        raise APIException(status_code=200, msg=f"Failed to process image assets: {str(e)}")
+
     try:
         prompt_lower = new_background_prompt.lower()
         is_night_scene = any(word in prompt_lower for word in ["night", "dark", "evening", "midnight", "dusk"])
-        
+
         if is_night_scene:
             lighting_instructions = (
                 "Nighttime environmental lighting, subtle ambient occlusion, "
@@ -399,9 +432,9 @@ async def change_background(
             f"The subject is perfectly integrated into this scene. "
             f"{lighting_instructions} Highly realistic photographic composite, natural depth of field."
         )
-            
+
         input_data = {
-            "original_image": orig_url, 
+            "original_image": orig_url,
             "user_prompt": new_background_prompt,
             "harmonized_prompt": harmonized_prompt,
             "resolution": resolution,
@@ -411,39 +444,39 @@ async def change_background(
             input_data["image_context"] = ref_bg_url
 
         db_job = models.StudioJob(
-        user_id=subscription.user_id, job_type=models.StudioJobType.BACKGROUND_CHANGE, input_data=input_data
+            user_id=subscription.user_id, job_type=models.StudioJobType.BACKGROUND_CHANGE, input_data=input_data
         )
         db.add(db_job)
         db.commit()
         db.refresh(db_job)
-        
-        # Deduct Upfront
+
         SubscriptionTransactionManager.deduct_resources(db, subscription, cost, "change_background", reference_id=db_job.id)
 
     except Exception as e:
         db.rollback()
-        raise APIException(status_code=500, msg=f"Database error while saving job: {str(e)}")
+        raise APIException(status_code=200, msg=f"Database error while saving job: {str(e)}")
 
     try:
         background_tasks.add_task(
-        process_advanced_background_chain, 
-        job_id=db_job.id, 
-        user_id=subscription.user_id,
-        cost=cost,
-        original_url=orig_url, 
-        harmonized_prompt=harmonized_prompt, 
-        reference_bg_url=ref_bg_url,
-        resolution=resolution,
-        generation_mode=generation_mode
-    )
+            process_advanced_background_chain,
+            job_id=db_job.id,
+            user_id=subscription.user_id,
+            cost=cost,
+            original_url=orig_url,
+            harmonized_prompt=harmonized_prompt,
+            reference_bg_url=ref_bg_url,
+            resolution=resolution,
+            generation_mode=generation_mode
+        )
 
         return StandardResponse(status=True, msg="Advanced background replacement queued.", data={"job_id": db_job.id, "credits_deducted": cost})
-    
+
     except Exception as e:
-        raise APIException(status_code=500, msg=f"Failed to queue task: {str(e)}")
-    
+        raise APIException(status_code=200, msg=f"Failed to queue task: {str(e)}")
+
+
 # ==========================================
-# 5. MODEL CREATE (Generate AI Human from Text)
+# 5. MODEL CREATE
 # ==========================================
 def build_smart_gender_anchor(age_str: str, gender_str: str, ethnicity_str: str) -> Tuple[str, str]:
     try:
@@ -457,11 +490,9 @@ def build_smart_gender_anchor(age_str: str, gender_str: str, ethnicity_str: str)
     if g_lower == "male":
         noun = "male boy" if age_int < 18 else "young male man" if age_int <= 25 else "male man"
         gender_weight = "(masculine male features, handsome male face:1.4)"
-        
     elif g_lower == "female":
         noun = "female girl" if age_int < 18 else "young female woman" if age_int <= 25 else "female woman"
         gender_weight = "(feminine female features, beautiful female face:1.4)"
-        
     else:
         noun = f"{gender_str} person"
         gender_weight = ""
@@ -469,42 +500,32 @@ def build_smart_gender_anchor(age_str: str, gender_str: str, ethnicity_str: str)
     anchor = f"a {age_int}-year-old {e_str} {noun}"
     return anchor, gender_weight
 
+
 def sanitize_hair_details(hair_length: str, hair_color: str, hair_type: str, hair_style: str) -> str:
     length = (hair_length or "").strip()
     color = (hair_color or "").strip()
     htype = (hair_type or "").strip()
     style = (hair_style or "").strip()
     
-    if length.lower() == "short" and "long" in style.lower():
-        style = style.lower().replace("long", "").strip().capitalize()
-    elif length.lower() in ["long", "waist-length"] and "short" in style.lower():
-        style = style.lower().replace("short", "").strip().capitalize()
-
     parts = []
     if length and length.upper() != "N/A": parts.append(length)
     if color and color.upper() != "N/A": parts.append(color)
     if htype and htype.upper() != "N/A": parts.append(f"{htype} texture")
     
     base_hair = ", ".join(parts) if parts else "neatly groomed hair"
-    
     if style and style.upper() != "N/A":
         return f"{base_hair}, styled as {style}"
     return base_hair
-
 
 
 def sanitize_facial_hair(beard_type: str, gender: str) -> str:
     beard_clean = (beard_type or "").strip()
     gender_lower = (gender or "").strip().lower()
     
-    # Prevent assigning facial hair attributes to female models
     if gender_lower == "female":
         return ""
         
-    if not beard_clean or beard_clean.upper() in ["N/A", "NONE"]:
-        return "clean-shaven face"
-        
-    if beard_clean.lower() in ["clean shaven", "clean-shaven", "no beard", "smooth"]:
+    if not beard_clean or beard_clean.upper() in ["N/A", "NONE", "CLEAN SHAVEN", "CLEAN-SHAVEN"]:
         return "clean-shaven face"
         
     if any(keyword in beard_clean.lower() for keyword in ["beard", "stubble", "mustache", "goatee"]):
@@ -512,49 +533,24 @@ def sanitize_facial_hair(beard_type: str, gender: str) -> str:
         
     return f"{beard_clean} beard"
 
+
 def sanitize_outfit_for_gender(outfit: str, gender: str) -> str:
     outfit_clean = (outfit or "").strip()
-    gender_lower = (gender or "").strip().lower()
-    
     if not outfit_clean:
         return "wearing a casual top"
+    return f"wearing {outfit_clean}" if not outfit_clean.lower().startswith(("wearing", "in ", "clad")) else outfit_clean
 
-    prefixes = ("wearing", "dressed in", "in ", "clad in")
-    if not any(outfit_clean.lower().startswith(p) for p in prefixes):
-        first_word = outfit_clean.split()[0].lower()
-        if first_word in ["a", "an", "the"]:
-            outfit_clean = f"wearing {outfit_clean}"
-        else:
-            outfit_clean = f"wearing a {outfit_clean}"
-
-    if gender_lower == "male":
-        female_garments = ["dress", "skirt", "gown", "blouse", "bikini", "bra", "crop top", "frock", "saree", "lehenga"]
-        if any(fg in outfit_clean.lower() for fg in female_garments):
-            outfit_clean = outfit_clean.lower()
-            outfit_clean = outfit_clean.replace("dress", "casual summer outfit")
-            outfit_clean = outfit_clean.replace("skirt", "shorts")
-            outfit_clean = outfit_clean.replace("gown", "tailored suit")
-            outfit_clean = outfit_clean.replace("blouse", "shirt")
-            outfit_clean = outfit_clean.replace("bikini", "swim trunks")
-            outfit_clean = outfit_clean.replace("frock", "shirt")
-            outfit_clean = f"{outfit_clean.capitalize()} (masculine male apparel)"
-
-    return outfit_clean
 
 def sanitize_background(setting: str) -> str:
     setting_clean = (setting or "").strip()
     if not setting_clean:
         return "standing in a minimalist photography studio setting"
-        
-    prefixes = ("standing", "sitting", "in ", "at ", "against", "in front of", "located in")
-    if not any(setting_clean.lower().startswith(p) for p in prefixes):
-        return f"standing in a {setting_clean}"
-    return setting_clean
+    return setting_clean if setting_clean.lower().startswith(("standing", "sitting", "in ", "at ")) else f"standing in a {setting_clean}"
 
 
 @router.post("/model-create", response_model=StandardResponse)
 async def model_create(
-    model_name:str = Form(...),
+    model_name: str = Form(...),
     age: Optional[str] = Form("25"),
     gender: Optional[str] = Form("Female"),
     ethnicity: Optional[str] = Form("Caucasian"),
@@ -563,7 +559,7 @@ async def model_create(
     hair_color: Optional[str] = Form("Dark brown"),
     hair_type: Optional[str] = Form("Wavy"),
     hair_style: Optional[str] = Form("Long flowing"),
-    beard_type:Optional[str] = Form(""),
+    beard_type: Optional[str] = Form(""),
     eye_color: Optional[str] = Form("Deep brown"),
     face_shape: Optional[str] = Form("Oval"),
     jawline: Optional[str] = Form("Soft"),
@@ -584,11 +580,11 @@ async def model_create(
     num_images: int = Form(1),                                               
     output_format: str = Form("png"),                                        
     db: Session = Depends(get_db),
-    # Gatekeeper: Enforces feature flag AND Volume quota limits (Gold=15, Plat=30)
     subscription: models.UserSubscription = Depends(PlanGatekeeper(feature_flag="create_model_enabled", resource_key=models.ResourceKey.MODEL_CREATION))
 ):
-    
+    await ensure_fashn_credits_available(min_required=1.0)
     cost = SubscriptionTransactionManager.calculate_cost("model_create", subscription.plan_snapshot)
+    
     if custom_prompt and custom_prompt.strip():
         final_prompt = custom_prompt.strip()
     else:
@@ -612,6 +608,7 @@ async def model_create(
             f"Fashion photography, (strict waist-up portrait:1.5), (lower body is strictly out of frame:1.5), "
             f"{resolution}, photorealistic, cinematic lighting, shot on 85mm lens, high-definition."
         )
+
     fashn_input_data = {
         "prompt": final_prompt,
         "resolution": resolution,
@@ -622,7 +619,7 @@ async def model_create(
     db_input_data = {
         "prompt": final_prompt,
         "attributes": {
-            "model_name":model_name,
+            "model_name": model_name,
             "age": age,
             "gender": gender,
             "ethnicity": ethnicity,
@@ -674,7 +671,6 @@ async def model_create(
     db.commit()
     db.refresh(db_job)
     
-    # Atomic Ledger & Quota deduction
     SubscriptionTransactionManager.deduct_resources(
         db, subscription, cost, "model_create", quota_key=models.ResourceKey.MODEL_CREATION, reference_id=db_job.id
     )
@@ -693,8 +689,9 @@ async def model_create(
         SubscriptionTransactionManager.refund_resources(
             db, subscription, cost, "model_create", quota_key=models.ResourceKey.MODEL_CREATION, reference_id=db_job.id, reason=str(e)
         )
-        raise APIException(status_code=500, msg=f"AI Engine failed: {str(e)}")
-    
+        raise APIException(status_code=200, msg=f"AI Engine failed: {str(e)}")
+
+
 @router.get("/my-models", response_model=StandardResponse)
 async def get_user_models(
     gender: Optional[str] = Query(None, description="Filter models by gender (e.g., 'Male' or 'Female')"), 
@@ -754,8 +751,9 @@ async def get_user_models(
         )
         
     except Exception as e:
-        raise APIException(status_code=500, msg=f"Failed to fetch models: {str(e)}")
-    
+        raise APIException(status_code=200, msg=f"Failed to fetch models: {str(e)}")
+
+
 @router.get("/model-detail/{job_id}", response_model=StandardResponse)
 async def get_model_detail(
     job_id: int = Path(..., description="The unique ID of the model job"),
@@ -772,7 +770,7 @@ async def get_model_detail(
         ).first()
 
         if not job:
-            raise APIException(status_code=404, msg="Model not found or is no longer active.")
+            raise APIException(status_code=200, msg="Model not found or is no longer active.")
 
         input_dict = job.input_data if isinstance(job.input_data, dict) else (json.loads(job.input_data) if job.input_data else {})
         prompt_text = input_dict.get("prompt", "")
@@ -804,7 +802,8 @@ async def get_model_detail(
     except APIException:
         raise
     except Exception as e:
-        raise APIException(status_code=500, msg=f"Failed to fetch model details: {str(e)}")
+        raise APIException(status_code=200, msg=f"Failed to fetch model details: {str(e)}")
+
 
 @router.get("/status/{job_id}", response_model=StandardResponse)
 async def get_studio_job_status(
@@ -819,7 +818,7 @@ async def get_studio_job_status(
         ).first()
         
         if not db_job:
-            raise APIException(status_code=404, msg="Job not found.")
+            raise APIException(status_code=200, msg="Job not found.")
 
         if db_job.status == models.JobStatus.PROCESSING and db_job.fashn_job_id:
             fashn_status, output_data = await check_vton_status(db_job.fashn_job_id)
@@ -850,23 +849,29 @@ async def get_studio_job_status(
         raise
     except Exception as e:
         logger.error(f"Error fetching studio status for Job {job_id}: {str(e)}", exc_info=True)
-        raise APIException(status_code=500, msg="Internal error fetching status.")
-    
+        raise APIException(status_code=200, msg="Internal error fetching status.")
+
+
+# ==========================================
+# 6. FACE TO MODEL
+# ==========================================
 @router.post("/face-to-model", response_model=StandardResponse)
 async def face_to_model(
-    face_image: UploadFile = File(...),                                    
-    prompt: Optional[str] = Form(None),                                    
-    aspect_ratio: str = Form("2:3"),                                       
-    resolution: str = Form("1k"),                                          
-    generation_mode: Optional[str] = Form(None),                           
-    num_images: int = Form(1),                                             
-    output_format: str = Form("jpeg"),                                     
+    face_image: Optional[UploadFile] = File(None),
+    generated_model_job_id: Optional[int] = Form(None),
+    prompt: Optional[str] = Form(None),
+    aspect_ratio: str = Form("2:3"),
+    resolution: str = Form("1k"),
+    generation_mode: Optional[str] = Form(None),
+    num_images: int = Form(1),
+    output_format: str = Form("png"),
     db: Session = Depends(get_db),
     subscription: models.UserSubscription = Depends(PlanGatekeeper(feature_flag="face_to_model"))
 ):
+    await ensure_fashn_credits_available(min_required=1.0)
     cost = SubscriptionTransactionManager.calculate_cost("face_to_model", subscription.plan_snapshot)
-    face_url = await process_upload(face_image)
-    
+    face_url = resolve_model_image_url(db, subscription.user_id, generated_model_job_id, face_image)
+
     input_data = {
         "face_image": face_url,
         "aspect_ratio": aspect_ratio,
@@ -874,7 +879,7 @@ async def face_to_model(
         "num_images": num_images,
         "output_format": output_format
     }
-    
+
     if prompt:
         input_data["prompt"] = prompt
     if generation_mode:
@@ -886,7 +891,7 @@ async def face_to_model(
     db.add(db_job)
     db.commit()
     db.refresh(db_job)
-    
+
     SubscriptionTransactionManager.deduct_resources(db, subscription, cost, "face_to_model", reference_id=db_job.id)
 
     try:
@@ -897,9 +902,9 @@ async def face_to_model(
         db_job.fashn_job_id = fashn_id
         db_job.status = models.JobStatus.PROCESSING
         db.commit()
-        
+
         return StandardResponse(status=True, msg="Face-to-Model creation started.", data={"job_id": db_job.id, "credits_deducted": cost})
     except Exception as e:
         db.rollback()
         SubscriptionTransactionManager.refund_resources(db, subscription, cost, "face_to_model", reference_id=db_job.id, reason=str(e))
-        raise APIException(status_code=500, msg=f"AI Engine failed: {str(e)}")
+        raise APIException(status_code=200, msg=f"AI Engine failed: {str(e)}")

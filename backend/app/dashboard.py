@@ -5,12 +5,12 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from . import models
+from . import models,schemas
 from .database import get_db
 from .auth import get_current_user
 from .schemas import StandardResponse
 from .exceptions import APIException
-from .gatekeeper import SubscriptionTransactionManager
+from .gatekeeper import SubscriptionTransactionManager,extract_enum_or_val
 
 logger = logging.getLogger(__name__)
 
@@ -426,3 +426,145 @@ async def estimate_credit_cost(
     except Exception as e:
         logger.error(f"Error estimating credit cost for user {current_user.id}: {str(e)}", exc_info=True)
         raise APIException(status_code=500, msg="Failed to calculate estimated cost.")
+    
+    
+    
+    
+# ==============================================================================
+# USER CREDIT HISTORY & FEATURE CONSUMPTION API
+# ==============================================================================
+@router.get("/credit-history", response_model=schemas.StandardCreditHistoryResponse)
+async def get_user_credit_history(
+    skip: int = Query(0, ge=0, description="Pagination offset"),
+    limit: int = Query(20, ge=1, le=100, description="Page limit"),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Retrieves the complete credit consumption ledger for the logged-in user,
+    detailing which features were accessed, credits deducted/refunded/added,
+    and preview URLs of generated outputs.
+    """
+    try:
+        # 1. Base query for credit ledger logs
+        base_query = db.query(models.UserResourceUsageLog).filter(
+            models.UserResourceUsageLog.user_id == current_user.id,
+            models.UserResourceUsageLog.resource_key == models.ResourceKey.CREDITS
+        ).order_by(models.UserResourceUsageLog.created_at.desc())
+
+        total_records = base_query.count()
+        logs = base_query.offset(skip).limit(limit).all()
+
+        # 2. Extract reference IDs to batch load linked job outputs efficiently
+        tryon_ids = [l.reference_id for l in logs if l.reference_type in ["tryon", "360", "vton"] and l.reference_id]
+        studio_ids = [
+            l.reference_id for l in logs 
+            if l.reference_type in ["studio", "image_to_video", "model_create", "model_swap", "face_to_model", "change_background", "product_to_model", "photoshoot_image", "video_generation"] and l.reference_id
+        ]
+        outfit_ids = [l.reference_id for l in logs if l.reference_type in ["outfit", "outerwear"] and l.reference_id]
+
+        # 3. Batch-fetch job records into fast lookup maps
+        tryon_map = {}
+        if tryon_ids:
+            records = db.query(models.TryOnJob).filter(models.TryOnJob.id.in_(tryon_ids)).all()
+            tryon_map = {r.id: r for r in records}
+
+        studio_map = {}
+        if studio_ids:
+            records = db.query(models.StudioJob).filter(models.StudioJob.id.in_(studio_ids)).all()
+            studio_map = {r.id: r for r in records}
+
+        outfit_map = {}
+        if outfit_ids:
+            records = db.query(models.OutfitJob).filter(models.OutfitJob.id.in_(outfit_ids)).all()
+            outfit_map = {r.id: r for r in records}
+
+        # 4. Map ledger entries to output items
+        history_items = []
+
+        for log in logs:
+            ref_type = (log.reference_type or "").lower()
+            ref_id = log.reference_id
+
+            output_url = None
+            feature_title = log.description or "Credit Transaction"
+
+            # Action classification
+            if log.delta < 0:
+                action_type = "DEDUCTION"
+            elif ref_type == "topup":
+                action_type = "TOPUP"
+            else:
+                action_type = "REFUND"
+
+            # A. Try-On Jobs Mapping
+            if ref_type in ["tryon", "360", "vton"] and ref_id in tryon_map:
+                job = tryon_map[ref_id]
+                raw_urls = job.result_image_urls
+                if isinstance(raw_urls, str):
+                    try:
+                        raw_urls = json.loads(raw_urls)
+                    except json.JSONDecodeError:
+                        raw_urls = []
+
+                if isinstance(raw_urls, list) and raw_urls:
+                    output_url = raw_urls[0]
+                elif isinstance(raw_urls, dict) and raw_urls:
+                    output_url = raw_urls.get("front") or next(iter(raw_urls.values()), job.garment_image_url)
+                else:
+                    output_url = job.garment_image_url
+
+                feature_title = "360° View Try-On" if ref_type == "360" else "Virtual Try-On"
+
+            # B. Studio Jobs Mapping (Model Swap, Video Gen, Background Change, Photoshoot)
+            elif ref_type in ["studio", "image_to_video", "model_create", "model_swap", "face_to_model", "change_background", "product_to_model", "photoshoot_image", "video_generation"] and ref_id in studio_map:
+                job = studio_map[ref_id]
+                urls = job.result_urls
+                if isinstance(urls, str):
+                    try:
+                        urls = json.loads(urls)
+                    except json.JSONDecodeError:
+                        urls = []
+
+                if urls and isinstance(urls, list):
+                    output_url = urls[0]
+
+                job_type_val = extract_enum_or_val(job, "job_type", ref_type)
+                feature_title = str(job_type_val).replace("_", " ").title()
+
+            # C. Outfit Jobs Mapping
+            elif ref_type in ["outfit", "outerwear"] and ref_id in outfit_map:
+                job = outfit_map[ref_id]
+                output_url = job.result_image_url or job.person_image_url
+                feature_title = "Outfit Builder & Outerwear"
+
+            # Formatting
+            formatted_date = log.created_at.strftime("%b %d %Y, %I:%M %p") if log.created_at else "N/A"
+
+            history_items.append({
+                "log_id": log.id,
+                "feature_name": feature_title,
+                "task_type": ref_type or "system",
+                "credits_consumed": abs(log.delta),
+                "credits_delta": log.delta,
+                "credits_remaining_after": log.used_after,
+                "action_type": action_type,
+                "description": log.description,
+                "output_preview_url": output_url,
+                "created_at": formatted_date
+            })
+
+        return schemas.StandardCreditHistoryResponse(
+            status=True,
+            msg="User credit history retrieved successfully.",
+            data={
+                "total_records": total_records,
+                "skip": skip,
+                "limit": limit,
+                "items": history_items
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"Error retrieving credit history for user {current_user.id}: {str(e)}", exc_info=True)
+        raise APIException(status_code=200, msg="Failed to retrieve credit usage history.")

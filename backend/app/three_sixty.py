@@ -10,11 +10,11 @@ from . import models
 from .database import get_db, SessionLocal
 from .auth import get_current_user
 from .utils import save_upload_file, download_and_save_remote_image
-from .fashn_service import trigger_vton_job, check_vton_status
+from .fashn_service import trigger_vton_job, check_vton_status, ensure_fashn_credits_available
 from .schemas import StandardResponse
 from .exceptions import APIException
 from .config import settings
-from .gatekeeper import PlanGatekeeper, SubscriptionTransactionManager # Gatekeeper & Transaction Manager
+from .gatekeeper import PlanGatekeeper, SubscriptionTransactionManager
 
 logger = logging.getLogger(__name__)
 
@@ -31,9 +31,6 @@ async def process_dynamic_generation_chain(
     resolution: str,
     output_format: str
 ):
-    """
-    Parallel execution worker for 360° multi-angle processing with automated credit refund handling.
-    """
     db = SessionLocal()
     base_url = settings.BACKEND_URL.rstrip("/")
     try:
@@ -65,7 +62,6 @@ async def process_dynamic_generation_chain(
             )
             return pos, fashn_id
 
-        # Fire all triggers at the exact same time
         trigger_results = await asyncio.gather(
             *[trigger_single_position(pos, url) for pos, url in person_urls.items()],
             return_exceptions=True
@@ -74,7 +70,6 @@ async def process_dynamic_generation_chain(
         position_fashn_ids: Dict[str, str] = {}
         for res in trigger_results:
             if isinstance(res, Exception):
-                # FIX: Raise exception instead of returning so control flow jumps to except block for credit refund
                 logger.error(f"[360 WORKER] Failed to trigger view for Job {job_id}: {res}")
                 raise Exception(f"Failed to dispatch position trigger: {str(res)}")
                 
@@ -98,7 +93,8 @@ async def process_dynamic_generation_chain(
             statuses = await asyncio.gather(*check_tasks, return_exceptions=True)
 
             for (pos, f_id), res in zip(positions_to_check, statuses):
-                if isinstance(res, Exception): continue
+                if isinstance(res, Exception): 
+                    continue
                 status, output = res
                 if status == "completed":
                     remote_url = output[0] if isinstance(output, list) else output
@@ -123,7 +119,6 @@ async def process_dynamic_generation_chain(
             db_job.status = models.JobStatus.FAILED
             db.commit()
 
-        # Automated refund handling if background processing fails
         sub = db.query(models.UserSubscription).filter(
             models.UserSubscription.user_id == user_id,
             models.UserSubscription.status == models.UserSubscriptionStatus.ACTIVE
@@ -152,11 +147,12 @@ async def create_360_job(
     person_image_side: Optional[UploadFile] = File(None),
 
     db: Session = Depends(get_db),
-    # Gatekeeper: Verifies active plan and snapshot rules
     subscription: models.UserSubscription = Depends(PlanGatekeeper())
 ):
-    # UPDATED: Pulling dynamic base URL from settings
     base_url = settings.BACKEND_URL.rstrip("/")
+
+    # Pre-flight check on master wallet
+    await ensure_fashn_credits_available(min_required=1.0)
 
     try:
         # 1. Resolve Garment Source
@@ -166,7 +162,7 @@ async def create_360_job(
                 models.ClosetItem.user_id == subscription.user_id
             ).first()
             if not item:
-                raise APIException(status_code=404, msg="Selected closet garment not found or unauthorized.")
+                raise APIException(status_code=200, msg="Selected closet garment not found or unauthorized.")
 
             path_part = item.file_path.replace("\\", "/")
             if not path_part.startswith("/"):
@@ -175,13 +171,12 @@ async def create_360_job(
 
         elif garment_image:
             if not garment_image.content_type.startswith("image/"):
-                raise APIException(status_code=400, msg="Invalid garment_image format. Must be an image file.")
+                raise APIException(status_code=200, msg="Invalid garment_image format. Must be an image file.")
             garment_filename = save_upload_file(garment_image)
             garment_url = f"{base_url}/static_uploads/{garment_filename}"
             
         else:
-            raise APIException(status_code=400, msg="Must provide either a garment_image upload or a valid closet_item_id.")
-
+            raise APIException(status_code=200, msg="Must provide either a garment_image upload or a valid closet_item_id.")
 
         # 2. Process person angles
         person_urls: Dict[str, str] = {}
@@ -195,24 +190,23 @@ async def create_360_job(
         for pos, file_obj in angle_uploads.items():
             if file_obj:
                 if not file_obj.content_type.startswith("image/"):
-                    raise APIException(status_code=400, msg=f"Invalid file for person_image_{pos}.")
+                    raise APIException(status_code=200, msg=f"Invalid file for person_image_{pos}.")
                 
                 filename = save_upload_file(file_obj)
                 person_urls[pos] = f"{base_url}/static_uploads/{filename}"
 
         if not person_urls:
-            raise APIException(status_code=400, msg="You must upload at least one person image (front, back, or side).")
+            raise APIException(status_code=200, msg="You must upload at least one person image (front, back, or side).")
         
         # 3. Feature Gate Rule: Silver Tier restriction on multi-angle views
         view_360_mode = subscription.plan_snapshot.get("view_360_mode", "single_image")
         if len(person_urls) > 1 and view_360_mode == "single_image":
             raise APIException(
-                status_code=403, 
+                status_code=200, 
                 msg="Multi-angle 360° generation (front, back, side) is restricted to Gold and Platinum plans. Silver plan supports single image view only."
             )
             
-            
-         # 4. Calculate Billing (2 credits per requested angle)
+        # 4. Calculate Billing (2 credits per requested angle)
         cost = len(person_urls) * 2
 
         # 5. Persist Tracking Record
@@ -227,7 +221,7 @@ async def create_360_job(
         db.commit()
         db.refresh(db_job)
         
-         # 6. Deduct Credits Atomically
+        # 6. Deduct Credits Atomically
         SubscriptionTransactionManager.deduct_resources(
             db, subscription, cost, "three_sixty", reference_id=db_job.id
         )
@@ -261,4 +255,4 @@ async def create_360_job(
     except Exception as e:
         db.rollback()
         logger.error(f"360 generation crash: {str(e)}", exc_info=True)
-        raise APIException(status_code=500, msg="Failed to register 360 AI task pipeline.")
+        raise APIException(status_code=200, msg="Failed to register 360 AI task pipeline.")

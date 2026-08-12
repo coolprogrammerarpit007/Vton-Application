@@ -330,6 +330,9 @@ class SubscriptionPlan(Base):
     plan_name = Column(String(50), unique=True, index=True, nullable=False)
     title = Column(String(100), nullable=False)
     price = Column(String(50), nullable=False)
+    gst = Column(String(50), nullable=True)
+    gst_amt = Column(String(50), nullable=True)
+    total_price = Column(String(50), nullable=True)
     credits = Column(Integer, nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
     
@@ -584,3 +587,20 @@ class FAQ(Base):
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    
+    
+    
+    
+class Page(Base):
+    __tablename__ = "pages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    template = Column(String(255), nullable=True)
+    name = Column(String(255), nullable=True)
+    title = Column(String(255), nullable=True)
+    slug = Column(String(255), unique=True, index=True)
+    content = Column(Text, nullable=True)  # Stores your HTML content
+    extras = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    deleted_at = Column(DateTime(timezone=True), nullable=True)

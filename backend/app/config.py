@@ -4,10 +4,10 @@ from pydantic import computed_field
 class Settings(BaseSettings):
     DB_CONNECTION: str = "mysql"
     DB_HOST: str = "localhost"
-    DB_PORT: int = 3307
-    DB_DATABASE: str = "vton_db"
-    DB_USERNAME: str = "root"
-    DB_PASSWORD: str = ""
+    DB_PORT: int = 3306
+    DB_DATABASE: str = "microc_vton"
+    DB_USERNAME: str = "microc_vton"
+    DB_PASSWORD: str = "ZsG6AZ1bAYeF"
     FASHN_API_KEY: str
     
     # --- PayU Configuration ---
@@ -16,8 +16,8 @@ class Settings(BaseSettings):
     PAYU_BASE_URL: str = "https://test.payu.in/_payment" # Change to https://secure.payu.in/_payment in production
     
     # --- App URLs ---
-    BACKEND_URL: str = "http://127.0.0.1:8000"
-    FRONTEND_URL: str = "http://127.0.0.1:5500"
+    BACKEND_URL: str = "https://vton-backend.microcrm.in/"
+    FRONTEND_URL: str = "https://vton.microcrm.in/"
 
 
     @computed_field

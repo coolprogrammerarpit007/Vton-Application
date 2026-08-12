@@ -58,6 +58,9 @@ class SubscriptionPlanResponse(BaseModel):
     plan_name: str
     title: str
     price: str
+    gst: Optional[str] = None
+    gst_amt: Optional[str] = None
+    total_price: Optional[str] = None
     credits: int
     is_active: bool
     
@@ -354,3 +357,57 @@ class StandardTopupOptionsResponse(BaseModel):
         
         
 # ***************************************************************************************
+
+
+
+# ****************************** credits history ****************************************
+
+class CreditHistoryItem(BaseModel):
+    log_id: int
+    feature_name: str                  # Human-readable feature name (e.g., "Virtual Try-On", "Model Swap")
+    task_type: str                     # Internal task key (e.g., "tryon", "model_swap", "topup")
+    credits_consumed: int              # Positive integer showing cost consumed (or added during topup)
+    credits_delta: int                 # Raw delta value (e.g., -2 for deduction, +10 for topup, +2 for refund)
+    credits_remaining_after: int       # Wallet balance immediately after the transaction
+    action_type: str                   # "DEDUCTION", "REFUND", or "TOPUP"
+    description: Optional[str] = None  # Transaction note / ledger description
+    output_preview_url: Optional[str] = None # Direct URL to rendered image/video output (if applicable)
+    created_at: str                    # Formatted timestamp (e.g., "Aug 11 2026, 05:30 PM")
+
+class CreditHistoryData(BaseModel):
+    total_records: int
+    skip: int
+    limit: int
+    items: List[CreditHistoryItem]
+
+class StandardCreditHistoryResponse(BaseModel):
+    status: bool
+    msg: str
+    data: CreditHistoryData
+    
+    
+    
+    
+# **********************   pincodes and location ************************************
+
+class PostOfficeDetail(BaseModel):
+    name: str = Field(..., description="Post Office branch name")
+    branch_type: str = Field(..., description="Branch type, e.g. Sub Post Office / Head Post Office")
+    delivery_status: str = Field(..., description="Delivery or Non-Delivery")
+    district: str
+    state: str
+    country: str
+    pincode: str
+
+class PincodeLookupData(BaseModel):
+    pincode: str
+    city: str
+    district: str
+    state: str
+    country: str
+    post_offices: List[PostOfficeDetail]
+
+class StandardPincodeResponse(BaseModel):
+    status: bool
+    msg: str
+    data: Optional[PincodeLookupData] = None

@@ -1,5 +1,7 @@
 import logging
 from typing import Optional, Dict, Any
+from datetime import datetime, timedelta
+
 from fastapi import Depends
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -11,7 +13,7 @@ from .auth import get_current_user
 from .exceptions import APIException
 
 logger = logging.getLogger(__name__)
-from datetime import datetime, timedelta
+
 
 def extract_enum_or_val(obj, attr_name: str, default=None):
     val = getattr(obj, attr_name, default)
@@ -23,7 +25,7 @@ def extract_enum_or_val(obj, attr_name: str, default=None):
 def auto_provision_free_tier(db: Session, user_id: int) -> models.UserSubscription:
     """
     Provisions a Free Tier Subscription (3 credits, Silver features) 
-    in the database for first-time users.
+    in the database for first-time users upon their first feature usage.
     """
     silver_plan = db.query(models.SubscriptionPlan).filter(
         (func.lower(func.trim(models.SubscriptionPlan.plan_name)).like("%silver%")) |
@@ -110,7 +112,7 @@ def auto_provision_free_tier(db: Session, user_id: int) -> models.UserSubscripti
     )
     
     db.add(free_sub)
-    db.flush() # Flush to generate the free_sub.id needed for the usage tables
+    db.flush() # Flush to generate the free_sub.id needed for usage tables
     
     # 2. Initialize Volume Quota for Model Creation
     model_limit = snapshot.get("model_creation_limit")
@@ -136,7 +138,7 @@ def auto_provision_free_tier(db: Session, user_id: int) -> models.UserSubscripti
         period_ends_at=cycle_end
     ))
 
-    # 4. Write the Assignment Log to History
+    # 4. Write Assignment Log to History
     db.add(models.UserSubscriptionHistory(
         user_id=user_id,
         user_subscription_id=free_sub.id,
@@ -157,15 +159,11 @@ def auto_provision_free_tier(db: Session, user_id: int) -> models.UserSubscripti
             models.UserSubscription.user_id == user_id,
             models.UserSubscription.status == models.UserSubscriptionStatus.ACTIVE
         ).first()
+
+
 class PlanGatekeeper:
     """
     FastAPI Dependency to enforce Subscription Plan rules, Feature Flags, and Volume Limits.
-    
-    Expected Result: 
-    Intercepts an API request, validates the user has an ACTIVE subscription, and checks 
-    their immutable `plan_snapshot` for feature access. If a `resource_key` is provided, 
-    it queries `UserPlanResourceUsage` to ensure the user has not hit their volume cap 
-    (e.g., maximum 15 AI models on the Gold plan). Returns the subscription object if authorized.
     """
     def __init__(
         self,
@@ -191,27 +189,16 @@ class PlanGatekeeper:
             models.UserSubscription.status == models.UserSubscriptionStatus.ACTIVE
         ).first()
         
-        
         # Auto-provision Free Tier for first-time users
         if not subscription:
             subscription = auto_provision_free_tier(db, current_user.id)
 
-        snapshot = subscription.plan_snapshot
-        # if not subscription:
-        #     logger.warning(f"Gatekeeper Block: User {current_user.id} has no active subscription.")
-        #     raise APIException(
-        #         status_code=200,
-        #         msg="No active subscription found. Please purchase a plan to continue."
-        #     )
+        snapshot = subscription.plan_snapshot or {}
 
-        snapshot = subscription.plan_snapshot
-
-       
         # 2. Check Boolean Feature Flag Access
         if self.feature_flag:
             has_access = snapshot.get(self.feature_flag, False)
             if not has_access:
-                # Map raw database column names to clean, user-friendly UI strings
                 feature_name_map = {
                     "create_model_enabled": "AI Model Creation",
                     "model_swap": "Model Swap",
@@ -222,7 +209,7 @@ class PlanGatekeeper:
                 }
                 friendly_name = feature_name_map.get(self.feature_flag, self.feature_flag.replace("_", " ").title())
                 
-                logger.warning(f"Gatekeeper Block: User {current_user.id} attempted to access restricted feature '{friendly_name}'.")
+                logger.warning(f"Gatekeeper Block: User {current_user.id} attempted restricted feature '{friendly_name}'.")
                 raise APIException(
                     status_code=200,
                     msg=f"Your current plan does not support the {friendly_name} feature. Please upgrade to unlock this."
@@ -238,6 +225,7 @@ class PlanGatekeeper:
                     msg="4K render quality requires the Gold or Platinum plan."
                 )
 
+        # 4. Validate Video Export Quality
         quality_map = {"480p": 1, "720p": 2, "1080p": 3}
         if self.min_video_quality:
             user_video_quality = snapshot.get("video_quality", "480p")
@@ -251,7 +239,7 @@ class PlanGatekeeper:
                     msg=f"Your plan is limited to {user_video_quality} video exports."
                 )
 
-        # 5. Check Resource Usage Limits (Volume Caps from user_plan_resource_usages)
+        # 5. Check Resource Usage Limits (Volume Caps)
         if self.resource_key:
             usage_record = db.query(models.UserPlanResourceUsage).filter(
                 models.UserPlanResourceUsage.user_subscription_id == subscription.id,
@@ -271,16 +259,11 @@ class PlanGatekeeper:
 
 class SubscriptionTransactionManager:
     """
-    Utility class to handle the atomic deduction and refund of credits AND volume quotas.
-    Writes directly to the immutable `user_resource_usage_logs` ledger.
+    Utility class to handle atomic deduction and refund of credits and volume quotas.
     """
     
     @staticmethod
     def calculate_cost(task_type: str, snapshot: Dict[str, Any], params: Dict[str, Any] = {}) -> int:
-        """
-        Expected Result: Returns the exact integer credit cost based on the user's plan tier 
-        and the specific parameters requested (e.g., 4K vs 2K).
-        """
         plan_name = snapshot.get("plan_name", "").lower()
         is_silver_or_free = "silver" in plan_name or "free" in plan_name
 
@@ -309,7 +292,7 @@ class SubscriptionTransactionManager:
         elif task_type == "outerwear":
             return 6 if "gold" in plan_name else 4
 
-        return 2  # Default fallback cost for Try-on / Smart Crop
+        return 2  # Default fallback cost
 
     @staticmethod
     def deduct_resources(
@@ -320,10 +303,6 @@ class SubscriptionTransactionManager:
         quota_key: Optional[models.ResourceKey] = None,
         reference_id: int = None
     ):
-        """
-        Expected Result: Safely deducts the credit cost and optionally increments a usage quota 
-        (like image_to_video count). Commits the atomic transaction and logs the ledger entry.
-        """
         # 1. Validate Credit Balance
         if subscription.credits_remaining < cost:
             logger.warning(f"Ledger Block: User {subscription.user_id} insufficient credits for {job_type}. Cost: {cost}, Balance: {subscription.credits_remaining}")
@@ -365,7 +344,7 @@ class SubscriptionTransactionManager:
         except IntegrityError as e:
             db.rollback()
             logger.error(f"Ledger Integrity Error for User {subscription.user_id}: {str(e)}")
-            raise APIException(status_code=500, msg="Transaction collision. Please try again.")
+            raise APIException(status_code=200, msg="Transaction collision. Please try again.")
 
     @staticmethod
     def refund_resources(
@@ -377,10 +356,6 @@ class SubscriptionTransactionManager:
         reference_id: int = None,
         reason: str = "Job Failed"
     ):
-        """
-        Expected Result: If an AI engine (like Fashn.ai) fails, this restores the credits, 
-        decrements the volume quota, and logs a positive refund entry to the ledger.
-        """
         # 1. Restore Credit Balance
         subscription.credits_remaining += cost
         
@@ -403,7 +378,6 @@ class SubscriptionTransactionManager:
                 models.UserPlanResourceUsage.user_subscription_id == subscription.id,
                 models.UserPlanResourceUsage.resource_key == quota_key
             ).first()
-            
             
             if usage_record and usage_record.used_value > 0:
                 usage_record.used_value -= 1

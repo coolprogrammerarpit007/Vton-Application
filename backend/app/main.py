@@ -39,6 +39,8 @@ from .support import router as support_routers
 from .plans import router as plans_router
 from .payment import router as payment_router
 from .faq import router as faq_router
+from .location import router as location_router
+from .pages import router as page_router
 
 
 from .fashn_service import trigger_vton_job, check_vton_status
@@ -98,6 +100,8 @@ app.include_router(image_utils_router)
 app.include_router(plans_router)
 app.include_router(payment_router)
 app.include_router(faq_router)
+app.include_router(location_router)
+app.include_router(page_router)
 
 origins = [
     "https://vton.falcondetectives.com",
@@ -206,6 +210,7 @@ async def create_tryon_job(
     garment_desc: Optional[str] = Form(""), 
     resolution: str = Form("1k"),
     output_format: str = Form("png"),
+    
     num_images: int = Form(1),
     db: Session = Depends(get_db),
     # Gatekeeper: Verifies virtual_try_on feature flag and active subscription
@@ -396,16 +401,24 @@ async def create_tryon_job(
             }
         )
         
+    except APIException as custom_err:
+        # Preserve specific error message and refund credits
+        db_job.status = models.JobStatus.FAILED
+        db.commit()
+        SubscriptionTransactionManager.refund_resources(
+            db, subscription, cost, "tryon", reference_id=db_job.id, reason=custom_err.msg
+        )
+        raise custom_err
+
     except Exception as api_error:
         logger.error(f"FASHN API Trigger failed for Job {db_job.id}: {str(api_error)}", exc_info=True)
         db_job.status = models.JobStatus.FAILED
         db.commit()
 
-        # Immediate refund if external service call fails
         SubscriptionTransactionManager.refund_resources(
             db, subscription, cost, "tryon", reference_id=db_job.id, reason=str(api_error)
         )
-        raise APIException(status_code=500, msg="Failed to initiate AI core. Your credits have been refunded.")
+        raise APIException(status_code=200, msg="Failed to initiate AI core. Your credits have been refunded.")
 
 @app.get("/api/tryon/{job_id}", response_model=StandardResponse,tags=["VTON Try-On API"])
 async def get_tryon_status(

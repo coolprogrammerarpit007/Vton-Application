@@ -16,6 +16,8 @@ from .database import get_db
 from .config import settings
 from .exceptions import APIException
 from .auth import get_current_user
+from .fashn_service import check_fashn_master_balance
+
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -69,7 +71,20 @@ async def initiate_payment(
 
     if not plan:
         logger.error(f"Initiate failed: No active plan found matching '{req.plan_name}'")
-        raise APIException(status_code=400, msg=f"Invalid or inactive subscription plan '{req.plan_name}' selected.")
+        raise APIException(status_code=200, msg=f"Invalid or inactive subscription plan '{req.plan_name}' selected.")
+    
+    # --- PRE-FLIGHT CHECK: Verify Fashn Master Credits vs Plan Credits ---
+    plan_required_credits = plan.credits or 0
+    fashn_balance = await check_fashn_master_balance()
+    
+    if fashn_balance >= 0 and fashn_balance < plan_required_credits:
+        logger.critical(
+            f"[PAYMENT INITIATE BLOCKED] Fashn master balance ({fashn_balance}) is less than plan credits ({plan_required_credits})."
+        )
+        raise APIException(
+            status_code=200,
+            msg="Subscription purchases are temporarily paused due to upstream maintenance. Please try again shortly."
+        )
     
     user_firstname = current_user.full_name or current_user.username
     user_email = current_user.email
@@ -79,7 +94,7 @@ async def initiate_payment(
     transaction = models.PaymentTransaction(
         txnid=txnid,
         user_id=current_user.id,
-        amount=plan.price,           
+        amount=plan.total_price,           
         product_info=plan.title,     
         firstname=user_firstname,
         email=user_email,
@@ -94,7 +109,7 @@ async def initiate_payment(
     payment_data = {
         "key": settings.PAYU_MERCHANT_KEY,
         "txnid": txnid,
-        "amount": plan.price,
+        "amount": plan.total_price,
         "productinfo": plan.title,
         "firstname": user_firstname,
         "email": user_email,
@@ -449,6 +464,17 @@ async def initiate_topup_payment(
     Initiates a PayU payment transaction specifically for credit top-ups.
     Encodes metadata: udf2='topup', udf3=credits_count.
     """
+    
+    # --- PRE-FLIGHT CHECK: Verify Fashn Master Credits vs Top-up Credits ---
+    fashn_balance = await check_fashn_master_balance()
+    if fashn_balance >= 0 and fashn_balance < req.credits:
+        logger.critical(
+            f"[TOPUP INITIATE BLOCKED] Fashn master balance ({fashn_balance}) is less than requested topup credits ({req.credits})."
+        )
+        raise APIException(
+            status_code=200,
+            msg="Credit top-ups are temporarily paused due to upstream maintenance. Please try again shortly."
+        )
     user_firstname = current_user.full_name or current_user.username
     user_email = current_user.email
     

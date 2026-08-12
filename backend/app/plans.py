@@ -36,17 +36,35 @@ async def get_all_subscription_plans(
         if billing_record:
             has_billing = True
 
-        # 3. Return combined response
+        # 3. Format response dynamically to prevent Pydantic missing field errors
+        formatted_plans = []
+        for plan in plans:
+            # Extract all fields dynamically from the database object
+            plan_dict = {k: v for k, v in plan.__dict__.items() if not k.startswith('_')}
+            
+            # Safely override the problematic Null/None variables with strings
+            plan_dict["gst"] = str(plan.gst) if getattr(plan, "gst", None) is not None else "0"
+            plan_dict["gst_amt"] = str(plan.gst_amt) if getattr(plan, "gst_amt", None) is not None else "0.00"
+            plan_dict["total_price"] = str(plan.total_price) if getattr(plan, "total_price", None) is not None else str(getattr(plan, "price", "0.00"))
+            
+            # Ensure timestamps are explicitly included even if None
+            plan_dict["created_at"] = getattr(plan, "created_at", None)
+            plan_dict["updated_at"] = getattr(plan, "updated_at", None)
+            
+            formatted_plans.append(plan_dict)
+
+        # 4. Return combined response
         return schemas.StandardSubscriptionPlanListResponse(
             status=True,
             msg="Subscription plans retrieved successfully.",
             has_billing_details=has_billing,  # NEW: Inject the boolean flag here
-            data=plans
+            data=formatted_plans
         )
         
     except Exception as e:
         logger.error(f"Error fetching subscription plans: {str(e)}")
-        raise APIException(status_code=500, msg="Failed to fetch subscription plans.")
+        # UPDATED: Changed 500 to 200 to align with standard controlled API error format
+        raise APIException(status_code=200, msg="Failed to fetch subscription plans.")
 
 
 # @router.get("/{plan_name}", response_model=schemas.StandardResponse)
