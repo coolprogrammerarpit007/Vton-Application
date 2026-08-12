@@ -165,31 +165,40 @@ async def product_to_model(
 # ==========================================
 @router.post("/model-swap", response_model=StandardResponse)
 async def model_swap(
+    # --- Original Model (Body) ---
     original_image: Optional[UploadFile] = File(None),
     generated_model_job_id: Optional[int] = Form(None),
+    
+    # --- Target Face (The new face to swap in) ---
     target_face_image: Optional[UploadFile] = File(None),
+    target_model_job_id: Optional[int] = Form(None),  # FIXED: Changed from UploadFile/File to int/Form
+    
+    # --- Parameters ---
     prompt: Optional[str] = Form(None),
     face_reference_mode: str = Form("match_reference"),
     resolution: str = Form("1k"),
     generation_mode: Optional[str] = Form(None),
     num_images: int = Form(1),
+    
     db: Session = Depends(get_db),
     subscription: models.UserSubscription = Depends(PlanGatekeeper(feature_flag="model_swap"))
 ):
     await ensure_fashn_credits_available(min_required=1.0)
     cost = SubscriptionTransactionManager.calculate_cost("model_swap", subscription.plan_snapshot)
+    
+    # 1. Resolve Original Model (Body)
     orig_url = resolve_model_image_url(db, subscription.user_id, generated_model_job_id, original_image)
-
+    
+    # 2. Resolve Target Face (New Face) safely using the existing helper
     face_url = None
-    if target_face_image:
-        face_url = await process_upload(target_face_image)
+    if target_model_job_id or target_face_image:
+        face_url = resolve_model_image_url(db, subscription.user_id, target_model_job_id, target_face_image)
 
     input_data = {
         "model_image": orig_url,
         "resolution": resolution,
         "num_images": num_images
     }
-
     if face_url:
         input_data["face_reference"] = face_url
         input_data["face_reference_mode"] = face_reference_mode
