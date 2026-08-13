@@ -10,11 +10,15 @@ from .database import get_db
 from .auth import get_current_user
 from .schemas import StandardResponse
 from .exceptions import APIException
-from .gatekeeper import SubscriptionTransactionManager,extract_enum_or_val
+from .gatekeeper import SubscriptionTransactionManager,extract_enum_or_val,auto_provision_free_tier
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/dashboard", tags=["Dashboard"])
+
+# ==============================================================================
+# 1. MAIN DASHBOARD API
+# ==============================================================================
 
 @router.get("", response_model=StandardResponse)
 async def get_dashboard_data(
@@ -31,30 +35,26 @@ async def get_dashboard_data(
             models.UserSubscription.status == models.UserSubscriptionStatus.ACTIVE
         ).first()
 
-        # --- CLEANED FALLBACK LOGIC ---
-        if active_sub:
-            credits_left = active_sub.credits_remaining
-            plan_snapshot = active_sub.plan_snapshot or {}
-            plan_title = plan_snapshot.get("title", "Free Plan")
-            credits_max = plan_snapshot.get("credits", 3)
-            plan_expiry = active_sub.ends_at.isoformat() if active_sub.ends_at else None
-        else:
-            # Fallback for brand new Free Tier users
-            credits_left = 3
-            plan_snapshot = {}
-            plan_title = "Free Plan"
-            credits_max = 3
-            plan_expiry = None
+
+        # --- AUTO-PROVISION FREE TIER ON FIRST LOGIN ---
+        if not active_sub:
+            logger.info(f"First dashboard load for User {current_user.id}. Provisioning DB Free Tier.")
+            active_sub = auto_provision_free_tier(db, current_user.id)
+            
+            
+        credits_left = active_sub.credits_remaining
+        plan_snapshot = active_sub.plan_snapshot or {}
+        plan_title = plan_snapshot.get("title", "Free Plan")
+        credits_max = plan_snapshot.get("credits", 3)
+        plan_expiry = active_sub.ends_at.isoformat() if active_sub.ends_at else None
             
             
         credits_low_warning = credits_left < 15
-        # New: Pull Expiry Date
-        plan_expiry = active_sub.ends_at.isoformat() if active_sub and active_sub.ends_at else None
-
+        
         today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
         today_created = 0
         generations_list = []
-
+        
         if category_filter in ["all", "tryon", "360"]:
             tryon_jobs = db.query(
                 models.TryOnJob.id, models.TryOnJob.category, models.TryOnJob.garment_image_url, 
@@ -185,6 +185,12 @@ async def get_dashboard_data(
     except Exception as e:
         logger.error(f"Error fetching dashboard data: {str(e)}", exc_info=True)
         raise APIException(status_code=500, msg="Failed to load dashboard data.")
+    
+    
+    
+# ==============================================================================
+# 2. UNIFIED STUDIO HISTORY API
+# ==============================================================================
 
 
 @router.get("/studio-history", response_model=StandardResponse)
@@ -203,11 +209,15 @@ async def get_studio_history(
             models.UserSubscription.user_id == current_user.id,
             models.UserSubscription.status == models.UserSubscriptionStatus.ACTIVE
         ).first()
+        
+         # --- AUTO-PROVISION FREE TIER ---
+        if not active_sub:
+            active_sub = auto_provision_free_tier(db, current_user.id)
 
-        # Update fallbacks to 3
-        remaining_credits = active_sub.credits_remaining if active_sub else 3
-        total_credits_given = active_sub.plan_snapshot.get("credits", 3) if active_sub else 3
 
+        remaining_credits = active_sub.credits_remaining
+        total_credits_given = active_sub.plan_snapshot.get("credits", 3)
+        
         total_images = 0
         total_videos = 0
         completed_count = 0
@@ -217,21 +227,26 @@ async def get_studio_history(
             models.StudioJob.id, models.StudioJob.job_type, models.StudioJob.status,
             models.StudioJob.input_data, models.StudioJob.result_urls, models.StudioJob.created_at
         ).filter(models.StudioJob.user_id == current_user.id, models.StudioJob.is_active == True).all()
-
+        
+        
+        
+        # --- PROCESS STUDIO JOBS ---
         for job in studio_jobs:
-            if job.status == models.JobStatus.COMPLETED: completed_count += 1
             is_video = job.job_type == models.StudioJobType.IMAGE_TO_VIDEO
-            if is_video: total_videos += 1
+            
+            if job.status == models.JobStatus.COMPLETED: 
+                completed_count += 1
+                if is_video:
+                    total_videos += 1
+                else:
+                    total_images += 1
             
             urls = job.result_urls if isinstance(job.result_urls, list) else (json.loads(job.result_urls) if job.result_urls else [])
             input_dict = job.input_data if isinstance(job.input_data, dict) else {}
-            if not is_video:
-                img_count = len(urls) if urls else input_dict.get("num_images", 1)
-                total_images += img_count
-
+            
             title = input_dict.get("prompt", "") or input_dict.get("bg_prompt", "Studio Generation")
             created_dt = job.created_at.replace(tzinfo=None) if getattr(job, 'created_at', None) else datetime.min
-
+            
             raw_generations_list.append({
                 "job_id": f"studio_{job.id}", "title": title,
                 "model_type": job.job_type.value if hasattr(job.job_type, 'value') else str(job.job_type),
@@ -245,9 +260,13 @@ async def get_studio_history(
             models.TryOnJob.id, models.TryOnJob.category, models.TryOnJob.status,
             models.TryOnJob.garment_image_url, models.TryOnJob.result_image_urls, models.TryOnJob.created_at
         ).filter(models.TryOnJob.user_id == current_user.id).all()
+        
+        # --- PROCESS TRYON JOBS ---
 
         for job in tryon_jobs:
-            if job.status == models.JobStatus.COMPLETED: completed_count += 1
+            if job.status == models.JobStatus.COMPLETED: 
+                completed_count += 1
+                total_images += 1
             
             raw_urls = job.result_image_urls
             if isinstance(raw_urls, str):
@@ -266,7 +285,6 @@ async def get_studio_history(
                 primary_url = raw_urls.get("front") or next(iter(raw_urls.values()), job.garment_image_url)
                 all_urls_list = list(raw_urls.values())
                 
-            total_images += len(all_urls_list) if all_urls_list else 1
             category_name = job.category.value if hasattr(job.category, 'value') else str(job.category)
             created_dt = job.created_at.replace(tzinfo=None) if getattr(job, 'created_at', None) else datetime.min
 
@@ -282,10 +300,13 @@ async def get_studio_history(
             models.OutfitJob.id, models.OutfitJob.styling_prompt, models.OutfitJob.status,
             models.OutfitJob.result_image_url, models.OutfitJob.person_image_url, models.OutfitJob.created_at
         ).filter(models.OutfitJob.user_id == current_user.id).all()
-
+        
+        
+        # --- PROCESS OUTFIT JOBS ---
         for job in outfit_jobs:
-            if job.status == models.JobStatus.COMPLETED: completed_count += 1
-            total_images += 1
+            if job.status == models.JobStatus.COMPLETED: 
+                completed_count += 1
+                total_images += 1 # FIX: Count as exactly 1 generation
             
             title = job.styling_prompt if (job.styling_prompt and job.styling_prompt.strip()) else "Outfit Builder"
             primary_url = job.result_image_url or job.person_image_url
@@ -356,10 +377,15 @@ async def get_user_credits(db: Session = Depends(get_db), current_user: models.U
             models.UserSubscription.status == models.UserSubscriptionStatus.ACTIVE
         ).first()
 
-        credits_left = active_sub.credits_remaining if active_sub else 3
-        plan_title = active_sub.plan_snapshot.get("title", "Free Tier") if active_sub else "Free Tier"
-        total_given = active_sub.plan_snapshot.get("credits", 0) if active_sub else 0
-        plan_expiry = active_sub.ends_at.isoformat() if active_sub and active_sub.ends_at else None
+        # --- AUTO-PROVISION FREE TIER ---
+        if not active_sub:
+            active_sub = auto_provision_free_tier(db, current_user.id)
+            
+        credits_left = active_sub.credits_remaining
+        plan_title = active_sub.plan_snapshot.get("title", "Free Tier")
+        total_given = active_sub.plan_snapshot.get("credits", 0)
+        plan_expiry = active_sub.ends_at.isoformat() if active_sub.ends_at else None
+
 
         return StandardResponse(
             status=True,
