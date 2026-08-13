@@ -26,8 +26,8 @@ class AspectRatio(Base):
     id = Column(Integer, primary_key=True, index=True)
     platform_id = Column(Integer, ForeignKey("platforms.id"), nullable=False)
     ratio = Column(String(10), nullable=False)
-    default_width = Column(Integer, nullable=False)
-    default_height = Column(Integer, nullable=False)
+    # default_width = Column(Integer, nullable=False)
+    # default_height = Column(Integer, nullable=False)
     is_default = Column(Boolean, default=False)
     
     created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
@@ -128,10 +128,12 @@ class TryOnJob(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     category = Column(Enum(GarmentCategory), nullable=False)
+    feature_name = Column(String(30),nullable=True)
     
     user_image_url = Column(String(255), nullable=False)
     garment_image_url = Column(String(255), nullable=False)
     result_image_urls = Column(JSON, nullable=True)
+    prompt = Column(String(255),nullable=True)
     
     fashn_job_id = Column(String(255), nullable=True, index=True)
     status = Column(Enum(JobStatus), default=JobStatus.PENDING, nullable=False)
@@ -180,7 +182,10 @@ class OutfitJob(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"))
     
-    person_image_url = Column(String(255)) 
+    person_image_url = Column(String(255))
+    top_closet_id = Column(Integer,nullable=True)
+    bottom_closet_id = Column(Integer,nullable=True)
+    outwear_closet_id = Column(Integer,nullable=True)
     status = Column(Enum(JobStatus), default=JobStatus.PENDING)
     fashn_job_id = Column(String(255), nullable=True)
     result_image_url = Column(String(255), nullable=True)
@@ -519,6 +524,19 @@ class UserBillingDetail(Base):
 
 
 
+
+class PlanActionCost(Base):
+    __tablename__ = "plan_credit_costs" 
+
+    id = Column(Integer, primary_key=True, index=True)
+    subscription_plan_id = Column(Integer, index=True)
+    action_key = Column(String(100), index=True)
+    credits = Column(Integer, default=2)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
     
     
     
@@ -604,3 +622,26 @@ class Page(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     deleted_at = Column(DateTime(timezone=True), nullable=True)
+    
+    
+    
+class UniversalConfig(Base):
+    __tablename__ = "universal_configs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    config_type = Column(String(50), nullable=False, index=True)
+    label = Column(String(100), nullable=False)
+    value = Column(String(50), nullable=False)
+    sort_order = Column(Integer, default=0)
+    is_active = Column(Boolean, default=True)
+
+    # Timestamps
+    created_at = Column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )

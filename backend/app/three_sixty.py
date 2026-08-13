@@ -20,6 +20,26 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/360", tags=["360 View Generator"])
 
+# --- Add this helper function at the top of your file ---
+def build_360_angle_prompt(pos: str, user_desc: str) -> str:
+    """
+    Constructs a highly constrained prompt to force pattern and structural 
+    consistency across different angles.
+    """
+    base_desc = user_desc.strip() if user_desc else ""
+    strict_anchor = (
+        "Preserve 100% exact original garment design, fabric print, pattern scale, "
+        "and collar structure. Maintain exact sleeve length and styling."
+    )
+    
+    if pos == "back":
+        return f"Rear view from behind. Model facing away from camera. {strict_anchor} {base_desc}".strip()
+    elif pos == "side":
+        return f"Profile side view. {strict_anchor} {base_desc}".strip()
+    else:
+        return f"Front view. {strict_anchor} {base_desc}".strip()
+
+
 async def process_dynamic_generation_chain(
     job_id: int,
     user_id: int,
@@ -42,14 +62,10 @@ async def process_dynamic_generation_chain(
         db_job.status = models.JobStatus.PROCESSING
         db.commit()
 
-        # 1. Dispatch parallel requests to FASHN
+        # 1. Dispatch parallel requests to FASHN with Strict Prompting
         async def trigger_single_position(pos: str, person_url: str):
-            angle_instruction = f"{pos} view"
-            final_description = (
-                f"{angle_instruction}, {garment_desc.strip()}"
-                if garment_desc and garment_desc.strip()
-                else angle_instruction
-            )
+            # FIX: Use the smart angle prompt builder instead of simple string concatenation
+            final_description = build_360_angle_prompt(pos, garment_desc)
 
             fashn_id = await trigger_vton_job(
                 model_image_url=person_url,
@@ -207,7 +223,13 @@ async def create_360_job(
             )
             
         # 4. Calculate Billing (2 credits per requested angle)
-        cost = len(person_urls) * 2
+        # cost = len(person_urls) * 2
+        cost = SubscriptionTransactionManager.calculate_cost(
+            db=db, 
+            subscription_plan_id=subscription.subscription_plan_id, 
+            action_key="view_360", 
+            params={"num_images": len(person_urls)}
+        )
 
         # 5. Persist Tracking Record
         db_job = models.TryOnJob(
@@ -215,6 +237,7 @@ async def create_360_job(
             category=category,
             user_image_url=list(person_urls.values())[0], 
             garment_image_url=garment_url,
+            feature_name = "Three Sixty",
             status=models.JobStatus.PENDING
         )
         db.add(db_job)

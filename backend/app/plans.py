@@ -7,64 +7,64 @@ from sqlalchemy import func
 from . import models, schemas
 from .database import get_db
 from .exceptions import APIException
-from .auth import get_current_user  # NEW: Import the auth dependency
+from .auth import get_current_user  ,get_current_user_optional
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/plans", tags=["Subscription Plans"])
 
-@router.get("", response_model=schemas.StandardSubscriptionPlanListResponse)
-async def get_all_subscription_plans(
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)  # NEW: Require logged-in user
-):
-    """
-    Fetches all active subscription plans and checks if the user has billing details.
-    """
-    try:
-        # 1. Fetch active plans
-        plans = db.query(models.SubscriptionPlan).filter(
-            models.SubscriptionPlan.is_active == True
-        ).all()
+# @router.get("", response_model=schemas.StandardSubscriptionPlanListResponse)
+# async def get_all_subscription_plans(
+#     db: Session = Depends(get_db),
+#     current_user: models.User = Depends(get_current_user)  # NEW: Require logged-in user
+# ):
+#     """
+#     Fetches all active subscription plans and checks if the user has billing details.
+#     """
+#     try:
+#         # 1. Fetch active plans
+#         plans = db.query(models.SubscriptionPlan).filter(
+#             models.SubscriptionPlan.is_active == True
+#         ).all()
 
-        # 2. Check if the user has a billing record
-        has_billing = False
-        billing_record = db.query(models.UserBillingDetail).filter(
-            models.UserBillingDetail.user_id == current_user.id
-        ).first()
+#         # 2. Check if the user has a billing record
+#         has_billing = False
+#         billing_record = db.query(models.UserBillingDetail).filter(
+#             models.UserBillingDetail.user_id == current_user.id
+#         ).first()
         
-        if billing_record:
-            has_billing = True
+#         if billing_record:
+#             has_billing = True
 
-        # 3. Format response dynamically to prevent Pydantic missing field errors
-        formatted_plans = []
-        for plan in plans:
-            # Extract all fields dynamically from the database object
-            plan_dict = {k: v for k, v in plan.__dict__.items() if not k.startswith('_')}
+#         # 3. Format response dynamically to prevent Pydantic missing field errors
+#         formatted_plans = []
+#         for plan in plans:
+#             # Extract all fields dynamically from the database object
+#             plan_dict = {k: v for k, v in plan.__dict__.items() if not k.startswith('_')}
             
-            # Safely override the problematic Null/None variables with strings
-            plan_dict["gst"] = str(plan.gst) if getattr(plan, "gst", None) is not None else "0"
-            plan_dict["gst_amt"] = str(plan.gst_amt) if getattr(plan, "gst_amt", None) is not None else "0.00"
-            plan_dict["total_price"] = str(plan.total_price) if getattr(plan, "total_price", None) is not None else str(getattr(plan, "price", "0.00"))
+#             # Safely override the problematic Null/None variables with strings
+#             plan_dict["gst"] = str(plan.gst) if getattr(plan, "gst", None) is not None else "0"
+#             plan_dict["gst_amt"] = str(plan.gst_amt) if getattr(plan, "gst_amt", None) is not None else "0.00"
+#             plan_dict["total_price"] = str(plan.total_price) if getattr(plan, "total_price", None) is not None else str(getattr(plan, "price", "0.00"))
             
-            # Ensure timestamps are explicitly included even if None
-            plan_dict["created_at"] = getattr(plan, "created_at", None)
-            plan_dict["updated_at"] = getattr(plan, "updated_at", None)
+#             # Ensure timestamps are explicitly included even if None
+#             plan_dict["created_at"] = getattr(plan, "created_at", None)
+#             plan_dict["updated_at"] = getattr(plan, "updated_at", None)
             
-            formatted_plans.append(plan_dict)
+#             formatted_plans.append(plan_dict)
 
-        # 4. Return combined response
-        return schemas.StandardSubscriptionPlanListResponse(
-            status=True,
-            msg="Subscription plans retrieved successfully.",
-            has_billing_details=has_billing,  # NEW: Inject the boolean flag here
-            data=formatted_plans
-        )
+#         # 4. Return combined response
+#         return schemas.StandardSubscriptionPlanListResponse(
+#             status=True,
+#             msg="Subscription plans retrieved successfully.",
+#             has_billing_details=has_billing,  # NEW: Inject the boolean flag here
+#             data=formatted_plans
+#         )
         
-    except Exception as e:
-        logger.error(f"Error fetching subscription plans: {str(e)}")
-        # UPDATED: Changed 500 to 200 to align with standard controlled API error format
-        raise APIException(status_code=200, msg="Failed to fetch subscription plans.")
+#     except Exception as e:
+#         logger.error(f"Error fetching subscription plans: {str(e)}")
+#         # UPDATED: Changed 500 to 200 to align with standard controlled API error format
+#         raise APIException(status_code=200, msg="Failed to fetch subscription plans.")
 
 
 # @router.get("/{plan_name}", response_model=schemas.StandardResponse)
@@ -95,6 +95,60 @@ async def get_all_subscription_plans(
 #         data=plan_dict
 #     )
     
+    
+    
+@router.get("", response_model=schemas.StandardSubscriptionPlanListResponse)
+async def get_all_subscription_plans(
+    db: Session = Depends(get_db),
+    # Inject the new optional dependency
+    current_user: Optional[models.User] = Depends(get_current_user_optional) 
+):
+    """
+    Fetches all active subscription plans. Checks if the user has billing details ONLY if they are logged in.
+    """
+    try:
+        # 1. Fetch active plans
+        plans = db.query(models.SubscriptionPlan).filter(
+            models.SubscriptionPlan.is_active == True
+        ).all()
+
+        # 2. Check if the user has a billing record (Safe check for public users)
+        has_billing = False
+        
+        # Only run the database query if a valid user object was returned by the token
+        if current_user:
+            billing_record = db.query(models.UserBillingDetail).filter(
+                models.UserBillingDetail.user_id == current_user.id
+            ).first()
+            
+            if billing_record:
+                has_billing = True
+
+        # 3. Format response dynamically to prevent Pydantic missing field errors
+        formatted_plans = []
+        for plan in plans:
+            plan_dict = {k: v for k, v in plan.__dict__.items() if not k.startswith('_')}
+            
+            plan_dict["gst"] = str(plan.gst) if getattr(plan, "gst", None) is not None else "0"
+            plan_dict["gst_amt"] = str(plan.gst_amt) if getattr(plan, "gst_amt", None) is not None else "0.00"
+            plan_dict["total_price"] = str(plan.total_price) if getattr(plan, "total_price", None) is not None else str(getattr(plan, "price", "0.00"))
+            
+            plan_dict["created_at"] = getattr(plan, "created_at", None)
+            plan_dict["updated_at"] = getattr(plan, "updated_at", None)
+            
+            formatted_plans.append(plan_dict)
+
+        # 4. Return combined response
+        return schemas.StandardSubscriptionPlanListResponse(
+            status=True,
+            msg="Subscription plans retrieved successfully.",
+            has_billing_details=has_billing,  # Will default to False for public users
+            data=formatted_plans
+        )
+        
+    except Exception as e:
+        logger.error(f"Error fetching subscription plans: {str(e)}")
+        raise APIException(status_code=200, msg="Failed to fetch subscription plans.")
     
     
 # ************************************* My Plans API ********************************************
@@ -258,3 +312,8 @@ async def get_user_current_plan(
     except Exception as e:
         logger.error(f"Error fetching plan details for user {current_user.id}: {str(e)}", exc_info=True)
         raise APIException(status_code=500, msg="Failed to retrieve plan details.")
+    
+    
+    
+    
+    

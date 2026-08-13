@@ -356,7 +356,7 @@ async def get_user_credits(db: Session = Depends(get_db), current_user: models.U
             models.UserSubscription.status == models.UserSubscriptionStatus.ACTIVE
         ).first()
 
-        credits_left = active_sub.credits_remaining if active_sub else 0
+        credits_left = active_sub.credits_remaining if active_sub else 3
         plan_title = active_sub.plan_snapshot.get("title", "Free Tier") if active_sub else "Free Tier"
         total_given = active_sub.plan_snapshot.get("credits", 0) if active_sub else 0
         plan_expiry = active_sub.ends_at.isoformat() if active_sub and active_sub.ends_at else None
@@ -411,7 +411,16 @@ async def estimate_credit_cost(
         }
         
         # Run through the central pricing matrix
-        cost = SubscriptionTransactionManager.calculate_cost(task_type, snapshot, params)
+        # cost = SubscriptionTransactionManager.calculate_cost(task_type, snapshot, params)
+        # Safely extract the plan ID from the snapshot for estimations
+        plan_id = snapshot.get("subscription_plan_id", 1)
+
+        cost = SubscriptionTransactionManager.calculate_cost(
+            db=db, 
+            subscription_plan_id=plan_id, 
+            action_key=task_type, 
+            params=params
+        )
         
         return StandardResponse(
             status=True,

@@ -14,6 +14,7 @@ from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from passlib.context import CryptContext
 from jose import JWTError, jwt
+from typing import Optional
 
 # Import your database models, schemas, configs, and session dependency
 from . import models
@@ -103,6 +104,33 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         logger.warning(f"Token validation failed: User ID {user_id} not found in database")
         raise credentials_exception
         
+    return user
+
+# Create a non-blocking OAuth2 scheme
+oauth2_scheme_optional = OAuth2PasswordBearer(tokenUrl="token", auto_error=False)
+def get_current_user_optional(
+    token: Optional[str] = Depends(oauth2_scheme_optional), 
+    db: Session = Depends(get_db)
+) -> Optional[models.User]:
+    """
+    Attempts to fetch the user if a token is provided. 
+    Returns None if no token exists or if the token is invalid (public user).
+    """
+    if not token:
+        return None 
+
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id: str = payload.get("sub")
+        
+        if user_id is None:
+            return None
+            
+    except JWTError:
+        # Fails gracefully without throwing an APIException
+        return None 
+        
+    user = db.query(models.User).filter(models.User.id == int(user_id)).first()
     return user
 
 

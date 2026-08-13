@@ -354,7 +354,13 @@ async def create_outfit_job(
     await ensure_fashn_credits_available(min_required=1.0)
     
     # 1. Always calculate as Outerwear (Flat 6 Credits for Gold/Platinum)
-    cost = SubscriptionTransactionManager.calculate_cost("outerwear", subscription.plan_snapshot)
+    # cost = SubscriptionTransactionManager.calculate_cost("outerwear", subscription.plan_snapshot)
+    cost = SubscriptionTransactionManager.calculate_cost(
+    db=db, 
+    subscription_plan_id=subscription.subscription_plan_id, 
+    action_key="outfit_generation", 
+    params={"resolution": resolution}
+)
     
     # 2. Validate at least one clothing ID was passed
     selected_garments = [id for id in [top_closet_id, bottom_closet_id, outerwear_closet_id] if id is not None]
@@ -396,7 +402,7 @@ async def create_outfit_job(
 
     # 4. Database Job Creation
     db_job = models.OutfitJob(
-        user_id=subscription.user_id, person_image_url=person_url, status=models.JobStatus.PENDING, styling_prompt=outfit_desc
+        user_id=subscription.user_id, person_image_url=person_url,top_closet_id=top_closet_id,bottom_closet_id=bottom_closet_id,outerwear_closet_id=outerwear_closet_id ,status=models.JobStatus.PENDING, styling_prompt=outfit_desc
     )
     db.add(db_job)
     db.commit()

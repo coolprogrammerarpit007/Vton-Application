@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
+from collections import defaultdict
 
 from fastapi.concurrency import run_in_threadpool
 
@@ -44,7 +45,7 @@ from .pages import router as page_router
 
 
 from .fashn_service import trigger_vton_job, check_vton_status
-from .models import MasterModuleType
+from .models import MasterModuleType,AspectRatio,UniversalConfig
 
 # ==========================================
 # Configure Production Logging
@@ -225,7 +226,12 @@ async def create_tryon_job(
         raise APIException(status_code=403, msg="4K render quality requires the Gold or Platinum plan.")
 
     # Calculate credit cost (2 credits)
-    cost = SubscriptionTransactionManager.calculate_cost("tryon", subscription.plan_snapshot)
+    cost = SubscriptionTransactionManager.calculate_cost(
+    db=db, 
+    subscription_plan_id=subscription.subscription_plan_id, 
+    action_key="virtual_try_on", 
+    params={"num_images": num_images, "resolution": resolution}
+)
     
     
     # ==========================================
@@ -344,9 +350,11 @@ async def create_tryon_job(
        # 3. Create Local Tracking Record
         db_job = models.TryOnJob(
             user_id=subscription.user_id,
+            feature_name = "Virtual Tryon",
             category=category,
             user_image_url=person_url,
             garment_image_url=garment_url,
+            prompt = garment_desc,
             status=models.JobStatus.PENDING
         )
         db.add(db_job)
@@ -605,44 +613,90 @@ async def universal_status_check(
         logger.error(f"Universal Polling Error: {str(e)}", exc_info=True)
         raise APIException(status_code=500, msg="Internal tracking error.")
     
-@app.get("/api/universal-configs", response_model=StandardResponse, tags=["System Configurations"])
-async def get_universal_configurations():
-    try:
-        static_data = {
-            "image_resolutions": [
-                {"label": "Standard (1K)", "value": "1k"},
-                {"label": "High Definition (2K)", "value": "2k"},
-                {"label": "Ultra HD (4K)", "value": "4k"}
-            ],
-            "video_qualities": [
-                {"label": "SD (480p)", "value": "480"},
-                {"label": "HD (720p)", "value": "720"},
-                {"label": "FHD (1080p)", "value": "1080"}
-            ],
-            "aspect_ratios": [
-                {"label": "Cinematic (21:9)", "value": "21:9"},
-                {"label": "Square (1:1)", "value": "1:1"},
-                {"label": "Classic Landscape (3:2)", "value": "3:2"},
-                {"label": "Standard Landscape (4:3)", "value": "4:3"},
-                {"label": "Large Landscape (5:4)", "value": "5:4"},
-                {"label": "Social Portrait (4:5)", "value": "4:5"},
-                {"label": "Standard Portrait (3:4)", "value": "3:4"},
-                {"label": "Classic Portrait (2:3)", "value": "2:3"},
-                {"label": "Widescreen (16:9)", "value": "16:9"},
-                {"label": "Mobile/Reels (9:16)", "value": "9:16"}
-            ],
-            "video-durations":[
-                {"label":"5s","value":5},
-                {"label":"10s","value":10},
-            ]
-        }
+# @app.get("/api/universal-configs", response_model=StandardResponse, tags=["System Configurations"])
+# async def get_universal_configurations():
+#     try:
+#         static_data = {
+#             "image_resolutions": [
+#                 {"label": "Standard (1K)", "value": "1k"},
+#                 {"label": "High Definition (2K)", "value": "2k"},
+#                 {"label": "Ultra HD (4K)", "value": "4k"}
+#             ],
+#             "video_qualities": [
+#                 {"label": "SD (480p)", "value": "480"},
+#                 {"label": "HD (720p)", "value": "720"},
+#                 {"label": "FHD (1080p)", "value": "1080"}
+#             ],
+#             "aspect_ratios": [
+#                 {"label": "Cinematic (21:9)", "value": "21:9"},
+#                 {"label": "Square (1:1)", "value": "1:1"},
+#                 {"label": "Classic Landscape (3:2)", "value": "3:2"},
+#                 {"label": "Standard Landscape (4:3)", "value": "4:3"},
+#                 {"label": "Large Landscape (5:4)", "value": "5:4"},
+#                 {"label": "Social Portrait (4:5)", "value": "4:5"},
+#                 {"label": "Standard Portrait (3:4)", "value": "3:4"},
+#                 {"label": "Classic Portrait (2:3)", "value": "2:3"},
+#                 {"label": "Widescreen (16:9)", "value": "16:9"},
+#                 {"label": "Mobile/Reels (9:16)", "value": "9:16"}
+#             ],
+#             "video-durations":[
+#                 {"label":"5s","value":5},
+#                 {"label":"10s","value":10},
+#             ]
+#         }
         
+#         return StandardResponse(
+#             status=True,
+#             msg="Universal media configurations retrieved successfully.",
+#             data=static_data
+#         )
+
+#     except Exception as e:
+#         logger.error(f"Error fetching universal configurations: {str(e)}", exc_info=True)
+#         raise APIException(status_code=500, msg="Failed to load system configurations.")
+
+
+@app.get(
+    "/api/universal-configs",
+    response_model=StandardResponse,
+    tags=["System Configurations"],
+)
+async def get_universal_configurations(db: Session = Depends(get_db)):
+    try:
+        # 1. Fetch active universal configs ordered by sort_order
+        universal_configs = (
+            db.query(UniversalConfig)
+            .filter(UniversalConfig.is_active == True)
+            .order_by(UniversalConfig.sort_order.asc())
+            .all()
+        )
+
+        formatted_data = defaultdict(list)
+
+        for item in universal_configs:
+            # Convert numeric strings (like duration '5') back to integers
+            val = int(item.value) if item.value.isdigit() else item.value
+            formatted_data[item.config_type].append(
+                {"label": item.label, "value": val}
+            )
+
+        # 2. Fetch aspect ratios dynamically from the aspect_ratios table
+        aspect_ratios = db.query(AspectRatio).all()
+
+        formatted_data["aspect_ratios"] = [
+            {"label": ar.ratio, "value": ar.ratio} for ar in aspect_ratios
+        ]
+
         return StandardResponse(
             status=True,
             msg="Universal media configurations retrieved successfully.",
-            data=static_data
+            data=dict(formatted_data),
         )
 
     except Exception as e:
-        logger.error(f"Error fetching universal configurations: {str(e)}", exc_info=True)
-        raise APIException(status_code=500, msg="Failed to load system configurations.")
+        logger.error(
+            f"Error fetching universal configurations: {str(e)}", exc_info=True
+        )
+        raise APIException(
+            status_code=500, msg="Failed to load system configurations."
+        )

@@ -34,8 +34,8 @@ def get_platforms_config(db: Session = Depends(get_db)):
                 {
                     "id": r.id,
                     "ratio": r.ratio,
-                    "default_width": r.default_width,
-                    "default_height": r.default_height,
+                    # "default_width": r.default_width,
+                    # "default_height": r.default_height,
                     "is_default": r.is_default
                 } for r in p.aspect_ratios
             ]

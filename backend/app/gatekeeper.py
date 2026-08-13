@@ -262,37 +262,186 @@ class SubscriptionTransactionManager:
     Utility class to handle atomic deduction and refund of credits and volume quotas.
     """
     
-    @staticmethod
-    def calculate_cost(task_type: str, snapshot: Dict[str, Any], params: Dict[str, Any] = {}) -> int:
-        plan_name = snapshot.get("plan_name", "").lower()
-        is_silver_or_free = "silver" in plan_name or "free" in plan_name
+    # @staticmethod
+    # def calculate_cost(task_type: str, snapshot: Dict[str, Any], params: Dict[str, Any] = {}) -> int:
+    #     plan_name = snapshot.get("plan_name", "").lower()
+    #     is_silver_or_free = "silver" in plan_name or "free" in plan_name
 
-        if task_type == "photoshoot_image":
-            quality = params.get("image_quality", "2k")
-            if quality == "2k":
-                return 2
-            elif quality == "4k":
-                return 6 if "gold" in plan_name else 4
+    #     if task_type == "photoshoot_image":
+    #         quality = params.get("image_quality", "2k")
+    #         if quality == "2k":
+    #             return 2
+    #         elif quality == "4k":
+    #             return 6 if "gold" in plan_name else 4
 
-        elif task_type == "video_generation":
-            resolution = params.get("resolution", "480p")
-            if resolution == "480p":
-                return 6 if is_silver_or_free else (5 if "gold" in plan_name else 4)
-            elif resolution == "720p":
-                return 8 if "gold" in plan_name else 5
-            elif resolution == "1080p":
-                return 6
+    #     elif task_type == "video_generation":
+    #         resolution = params.get("resolution", "480p")
+    #         if resolution == "480p":
+    #             return 6 if is_silver_or_free else (5 if "gold" in plan_name else 4)
+    #         elif resolution == "720p":
+    #             return 8 if "gold" in plan_name else 5
+    #         elif resolution == "1080p":
+    #             return 6
 
-        elif task_type == "model_create":
-            return 10 if "gold" in plan_name else 7
+    #     elif task_type == "model_create":
+    #         return 10 if "gold" in plan_name else 7
 
-        elif task_type in ["face_to_model", "model_swap"]:
-            return 5 if "gold" in plan_name else 4
+    #     elif task_type in ["face_to_model", "model_swap"]:
+    #         return 5 if "gold" in plan_name else 4
             
-        elif task_type == "outerwear":
-            return 6 if "gold" in plan_name else 4
+    #     elif task_type == "outerwear":
+    #         return 6 if "gold" in plan_name else 4
 
-        return 2  # Default fallback cost
+    #     return 2  # Default fallback cost
+
+    # @staticmethod
+    # def deduct_resources(
+    #     db: Session, 
+    #     subscription: models.UserSubscription, 
+    #     cost: int, 
+    #     job_type: str,
+    #     quota_key: Optional[models.ResourceKey] = None,
+    #     reference_id: int = None
+    # ):
+    #     # 1. Validate Credit Balance
+    #     if subscription.credits_remaining < cost:
+    #         logger.warning(f"Ledger Block: User {subscription.user_id} insufficient credits for {job_type}. Cost: {cost}, Balance: {subscription.credits_remaining}")
+    #         raise APIException(
+    #             status_code=200,
+    #             msg=f"Insufficient credits. Required: {cost}, Available: {subscription.credits_remaining}"
+    #         )
+
+    #     # 2. Update Credit Balance
+    #     subscription.credits_remaining -= cost
+        
+    #     # 3. Write to Immutable Ledger
+    #     log_entry = models.UserResourceUsageLog(
+    #         user_id=subscription.user_id,
+    #         user_subscription_id=subscription.id,
+    #         resource_key=models.ResourceKey.CREDITS,
+    #         delta=-cost,
+    #         used_after=subscription.credits_remaining,
+    #         reference_type=job_type,
+    #         reference_id=reference_id,
+    #         description=f"Deduction for {job_type}"
+    #     )
+    #     db.add(log_entry)
+
+    #     # 4. Increment Volume Quota (if applicable)
+    #     if quota_key:
+    #         usage_record = db.query(models.UserPlanResourceUsage).filter(
+    #             models.UserPlanResourceUsage.user_subscription_id == subscription.id,
+    #             models.UserPlanResourceUsage.resource_key == quota_key
+    #         ).first()
+            
+    #         if usage_record:
+    #             usage_record.used_value += 1
+
+    #     # 5. Commit Atomic Transaction
+    #     try:
+    #         db.commit()
+    #         db.refresh(subscription)
+    #     except IntegrityError as e:
+    #         db.rollback()
+    #         logger.error(f"Ledger Integrity Error for User {subscription.user_id}: {str(e)}")
+    #         raise APIException(status_code=200, msg="Transaction collision. Please try again.")
+
+    # @staticmethod
+    # def refund_resources(
+    #     db: Session, 
+    #     subscription: models.UserSubscription, 
+    #     cost: int, 
+    #     job_type: str,
+    #     quota_key: Optional[models.ResourceKey] = None,
+    #     reference_id: int = None,
+    #     reason: str = "Job Failed"
+    # ):
+    #     # 1. Restore Credit Balance
+    #     subscription.credits_remaining += cost
+        
+    #     # 2. Write Refund to Immutable Ledger
+    #     log_entry = models.UserResourceUsageLog(
+    #         user_id=subscription.user_id,
+    #         user_subscription_id=subscription.id,
+    #         resource_key=models.ResourceKey.CREDITS,
+    #         delta=cost,
+    #         used_after=subscription.credits_remaining,
+    #         reference_type=job_type,
+    #         reference_id=reference_id,
+    #         description=f"Refund for {job_type}: {reason}"
+    #     )
+    #     db.add(log_entry)
+
+    #     # 3. Decrement Volume Quota (if applicable)
+    #     if quota_key:
+    #         usage_record = db.query(models.UserPlanResourceUsage).filter(
+    #             models.UserPlanResourceUsage.user_subscription_id == subscription.id,
+    #             models.UserPlanResourceUsage.resource_key == quota_key
+    #         ).first()
+            
+    #         if usage_record and usage_record.used_value > 0:
+    #             usage_record.used_value -= 1
+
+    #     db.commit()
+    
+    
+    
+    """
+    Utility class to handle atomic deduction and refund of credits and volume quotas.
+    Now fully database-driven for dynamic admin control.
+    """
+    
+    @staticmethod
+    def calculate_cost(
+        db: Session, 
+        subscription_plan_id: int, 
+        action_key: str, 
+        params: Dict[str, Any] = {}
+    ) -> int:
+        """
+        Dynamically calculates the total credit cost of a job by combining the base cost 
+        from the database with dynamic request multipliers (images, duration).
+        """
+        # 1. Advanced Key Resolution for Overrides
+        # This allows an admin to create specific keys like "image_to_video_1080p" 
+        # or "photoshoot_image_4k" to charge premium rates for high-res outputs.
+        resolution = params.get("resolution", "").lower()
+        search_keys = [f"{action_key}_{resolution}", action_key] if resolution else [action_key]
+        
+        cost_record = None
+        for key in search_keys:
+            cost_record = db.query(models.PlanActionCost).filter(
+                models.PlanActionCost.subscription_plan_id == subscription_plan_id,
+                models.PlanActionCost.action_key == key,
+                models.PlanActionCost.is_active == True
+            ).first()
+            
+            if cost_record:
+                break
+                
+        # Fallback safeguard in case the admin hasn't configured a specific feature key yet
+        base_cost = cost_record.credits if cost_record else 2 
+
+        # 2. Apply Multipliers for Quantity
+        # E.g., if base_cost is 2, and user requests 3 images, total = 6
+        try:
+            num_images = int(params.get("num_images", 1))
+        except (ValueError, TypeError):
+            num_images = 1
+            
+        # 3. Apply Multipliers for Video Duration 
+        # Assuming base cost covers a standard 5-second video. 
+        # A 10-second video automatically doubles the base cost.
+        try:
+            duration = int(params.get("duration", 5))
+            duration_multiplier = max(1, duration // 5)
+        except (ValueError, TypeError):
+            duration_multiplier = 1
+
+        # 4. Final Mathematical Calculation
+        total_cost = base_cost * num_images * duration_multiplier
+        
+        return total_cost
 
     @staticmethod
     def deduct_resources(

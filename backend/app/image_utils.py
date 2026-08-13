@@ -40,7 +40,12 @@ async def api_smart_crop(
         raise APIException(status_code=400, msg="Provided payload asset must be a valid image type.")
     
     
-    cost = SubscriptionTransactionManager.calculate_cost("smart_crop", subscription.plan_snapshot)
+    # cost = SubscriptionTransactionManager.calculate_cost("smart_crop", subscription.plan_snapshot)
+    cost = SubscriptionTransactionManager.calculate_cost(
+    db=db, 
+    subscription_plan_id=subscription.subscription_plan_id, 
+    action_key="smart_crop"
+    )
     
     # 1. Stream input file down into localized scratch disks
     original_filename = save_upload_file(image)

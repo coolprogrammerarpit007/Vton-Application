@@ -91,10 +91,11 @@ async def product_to_model(
     if resolution == "4k" and subscription.plan_snapshot.get("image_quality", "2k") == "2k":
         raise APIException(status_code=200, msg="4K render quality requires the Gold or Platinum plan.")
 
-    cost = SubscriptionTransactionManager.calculate_cost(
-        "photoshoot_image", subscription.plan_snapshot, {"image_quality": resolution}
-    )
+    # cost = SubscriptionTransactionManager.calculate_cost(
+    #     "photoshoot_image", subscription.plan_snapshot, {"image_quality": resolution}
+    # )
 
+    cost = SubscriptionTransactionManager.calculate_cost(db=db, subscription_plan_id=subscription.subscription_plan_id, action_key="product_to_model", params={"resolution": resolution, "num_images": num_images})
     garment_url = await process_upload(garment_image)
 
     input_data = {
@@ -184,7 +185,8 @@ async def model_swap(
     subscription: models.UserSubscription = Depends(PlanGatekeeper(feature_flag="model_swap"))
 ):
     await ensure_fashn_credits_available(min_required=1.0)
-    cost = SubscriptionTransactionManager.calculate_cost("model_swap", subscription.plan_snapshot)
+    # cost = SubscriptionTransactionManager.calculate_cost("model_swap", subscription.plan_snapshot)
+    cost = SubscriptionTransactionManager.calculate_cost(db=db, subscription_plan_id=subscription.subscription_plan_id, action_key="model_swap", params={"resolution": resolution, "num_images": num_images})
     
     # 1. Resolve Original Model (Body)
     orig_url = resolve_model_image_url(db, subscription.user_id, generated_model_job_id, original_image)
@@ -265,7 +267,8 @@ async def image_to_video(
     if req_min > user_max:
         raise APIException(status_code=200, msg=f"Your plan is limited to {subscription.plan_snapshot.get('video_quality')} video exports.")
 
-    cost = SubscriptionTransactionManager.calculate_cost("video_generation", subscription.plan_snapshot, {"resolution": resolution})
+    # cost = SubscriptionTransactionManager.calculate_cost("video_generation", subscription.plan_snapshot, {"resolution": resolution})
+    cost = SubscriptionTransactionManager.calculate_cost(db=db, subscription_plan_id=subscription.subscription_plan_id, action_key="image_to_video", params={"resolution": resolution, "duration": duration})
     source_url = resolve_model_image_url(db, subscription.user_id, generated_model_job_id, source_image)
 
     end_url = None
@@ -409,7 +412,8 @@ async def change_background(
     subscription: models.UserSubscription = Depends(PlanGatekeeper(feature_flag="change_background"))
 ):
     await ensure_fashn_credits_available(min_required=1.0)
-    cost = SubscriptionTransactionManager.calculate_cost("change_background", subscription.plan_snapshot)
+    # cost = SubscriptionTransactionManager.calculate_cost("change_background", subscription.plan_snapshot)
+    cost = SubscriptionTransactionManager.calculate_cost(db=db, subscription_plan_id=subscription.subscription_plan_id, action_key="change_background", params={"resolution": resolution})
 
     try:
         orig_url = resolve_model_image_url(db, subscription.user_id, generated_model_job_id, original_image)
@@ -592,8 +596,8 @@ async def model_create(
     subscription: models.UserSubscription = Depends(PlanGatekeeper(feature_flag="create_model_enabled", resource_key=models.ResourceKey.MODEL_CREATION))
 ):
     await ensure_fashn_credits_available(min_required=1.0)
-    cost = SubscriptionTransactionManager.calculate_cost("model_create", subscription.plan_snapshot)
-    
+    # cost = SubscriptionTransactionManager.calculate_cost("model_create", subscription.plan_snapshot)
+    cost = SubscriptionTransactionManager.calculate_cost(db=db, subscription_plan_id=subscription.subscription_plan_id, action_key="create_model", params={"resolution": resolution, "num_images": num_images})
     if custom_prompt and custom_prompt.strip():
         final_prompt = custom_prompt.strip()
     else:
@@ -878,7 +882,8 @@ async def face_to_model(
     subscription: models.UserSubscription = Depends(PlanGatekeeper(feature_flag="face_to_model"))
 ):
     await ensure_fashn_credits_available(min_required=1.0)
-    cost = SubscriptionTransactionManager.calculate_cost("face_to_model", subscription.plan_snapshot)
+    # cost = SubscriptionTransactionManager.calculate_cost("face_to_model", subscription.plan_snapshot)
+    cost = SubscriptionTransactionManager.calculate_cost(db=db, subscription_plan_id=subscription.subscription_plan_id, action_key="face_to_model", params={"resolution": resolution, "num_images": num_images})
     face_url = resolve_model_image_url(db, subscription.user_id, generated_model_job_id, face_image)
 
     input_data = {
