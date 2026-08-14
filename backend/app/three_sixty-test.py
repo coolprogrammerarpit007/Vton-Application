@@ -225,11 +225,12 @@ async def create_360_job(
             
         # 4. Calculate Billing (2 credits per requested angle)
         # cost = len(person_urls) * 2
+        job_params = {"num_images": len(person_urls), "resolution": resolution}
         cost = SubscriptionTransactionManager.calculate_cost(
             db=db, 
             subscription_plan_id=subscription.subscription_plan_id, 
-            action_key="view_360", 
-            params={"num_images": len(person_urls)}
+            action_key="three_sixty", 
+            params=job_params
         )
 
         # 5. Persist Tracking Record
@@ -247,7 +248,7 @@ async def create_360_job(
         
         # 6. Deduct Credits Atomically
         SubscriptionTransactionManager.deduct_resources(
-            db, subscription, cost, "three_sixty", reference_id=db_job.id
+            db, subscription, cost, "three_sixty", reference_id=db_job.id, params=job_params
         )
 
         # 7. Dispatch Background Processing Chain
@@ -277,6 +278,21 @@ async def create_360_job(
     except APIException:
         raise
     except Exception as e:
-        db.rollback()
-        logger.error(f"360 generation crash: {str(e)}", exc_info=True)
-        raise APIException(status_code=200, msg="Failed to register 360 AI task pipeline.")
+        logger.error(f"[360 WORKER] Crash on Job {job_id}: {str(e)}", exc_info=True)
+        if 'db_job' in locals() and db_job:
+            db_job.status = models.JobStatus.FAILED
+            db.commit()
+
+        sub = db.query(models.UserSubscription).filter(
+            models.UserSubscription.user_id == user_id,
+            models.UserSubscription.status == models.UserSubscriptionStatus.ACTIVE
+        ).first()
+        if sub:
+            # Reconstruct job_params to ensure the refund calculates the exact Fashn cost
+            # (Assuming you can pass person_urls length or default to 1 if empty)
+            num_angles = len(person_urls) if 'person_urls' in locals() and person_urls else 1
+            refund_params = {"num_images": num_angles, "resolution": resolution}
+
+            SubscriptionTransactionManager.refund_resources(
+                db, sub, cost, "three_sixty", reference_id=job_id, reason=str(e), params=refund_params
+            )

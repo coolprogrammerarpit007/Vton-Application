@@ -90,6 +90,8 @@ async def product_to_model(
 
     if resolution == "4k" and subscription.plan_snapshot.get("image_quality", "2k") == "2k":
         raise APIException(status_code=200, msg="4K render quality requires the Gold or Platinum plan.")
+    
+    job_params = {"num_images": num_images, "resolution": resolution, "face_reference": bool(face_reference)}
 
     # cost = SubscriptionTransactionManager.calculate_cost(
     #     "photoshoot_image", subscription.plan_snapshot, {"image_quality": resolution}
@@ -135,7 +137,7 @@ async def product_to_model(
     db.refresh(db_job)
 
     SubscriptionTransactionManager.deduct_resources(
-        db, subscription, cost, "product_to_model", reference_id=db_job.id
+        db, subscription, cost, "product_to_model", reference_id=db_job.id, params=job_params
     )
 
     try:
@@ -157,7 +159,7 @@ async def product_to_model(
     except Exception as e:
         db.rollback()
         SubscriptionTransactionManager.refund_resources(
-            db, subscription, cost, "product_to_model", reference_id=db_job.id, reason=str(e)
+            db, subscription, cost, "product_to_model", reference_id=db_job.id, reason=str(e), params=job_params
         )
         raise APIException(status_code=200, msg=f"AI Engine failed: {str(e)}")
 
@@ -197,6 +199,7 @@ async def model_swap(
     if target_model_job_id or target_face_image:
         face_url = resolve_model_image_url(db, subscription.user_id, target_model_job_id, target_face_image)
 
+    job_params = {"num_images": num_images, "resolution": resolution, "face_reference": bool(face_url)}
     input_data = {
         "model_image": orig_url,
         "resolution": resolution,
@@ -217,7 +220,7 @@ async def model_swap(
     db.commit()
     db.refresh(db_job)
 
-    SubscriptionTransactionManager.deduct_resources(db, subscription, cost, "model_swap", reference_id=db_job.id)
+    SubscriptionTransactionManager.deduct_resources(db, subscription, cost, "model_swap", reference_id=db_job.id, params=job_params)
 
     try:
         fashn_id = await trigger_generic_fashn_job(
@@ -233,7 +236,7 @@ async def model_swap(
 
     except Exception as e:
         db.rollback()
-        SubscriptionTransactionManager.refund_resources(db, subscription, cost, "model_swap", reference_id=db_job.id, reason=str(e))
+        SubscriptionTransactionManager.refund_resources(db, subscription, cost, "model_swap", reference_id=db_job.id, reason=str(e), params=job_params)
         raise APIException(status_code=200, msg=str(e))
 
 
@@ -253,22 +256,32 @@ async def image_to_video(
 ):
     await ensure_fashn_credits_available(db=db,min_required=1.0)
 
+    # --- REPLACEMENT BLOCK ---
+    # 1. Safely parse the JSON snapshot into a dictionary
+    snapshot_dict = subscription.plan_snapshot
+    if isinstance(snapshot_dict, str):
+        try:
+            snapshot_dict = json.loads(snapshot_dict)
+        except json.JSONDecodeError:
+            snapshot_dict = {}
+
     if resolution and not resolution.endswith("p"):
         resolution = f"{resolution}p"
 
     if not resolution:
-        resolution = subscription.plan_snapshot.get("video_quality", "480p")
+        resolution = snapshot_dict.get("video_quality", "480p")
 
-    if resolution == "1080p" and "platinum" not in subscription.plan_snapshot.get("plan_name", "").lower():
+    if resolution == "1080p" and "platinum" not in snapshot_dict.get("plan_name", "").lower():
         raise APIException(status_code=200, msg="1080p Pro video rendering is exclusively available on the Platinum plan.")
 
     quality_map = {"480p": 1, "720p": 2, "1080p": 3}
-    user_max = quality_map.get(subscription.plan_snapshot.get("video_quality", "480p"), 1)
+    user_max = quality_map.get(snapshot_dict.get("video_quality", "480p"), 1)
     req_min = quality_map.get(resolution, 1)
 
     if req_min > user_max:
         raise APIException(status_code=200, msg=f"Your plan is limited to {subscription.plan_snapshot.get('video_quality')} video exports.")
 
+    job_params = {"duration": duration, "resolution": resolution}
     # cost = SubscriptionTransactionManager.calculate_cost("video_generation", subscription.plan_snapshot, {"resolution": resolution})
     cost = SubscriptionTransactionManager.calculate_cost(db=db, subscription_plan_id=subscription.subscription_plan_id, action_key="image_to_video", params={"resolution": resolution, "duration": duration})
     source_url = resolve_model_image_url(db, subscription.user_id, generated_model_job_id, source_image)
@@ -296,21 +309,34 @@ async def image_to_video(
     db.refresh(db_job)
 
     SubscriptionTransactionManager.deduct_resources(
-        db, subscription, cost, "image_to_video", quota_key=models.ResourceKey.IMAGE_TO_VIDEO, reference_id=db_job.id
+        db, subscription, cost, "image_to_video", quota_key=models.ResourceKey.IMAGE_TO_VIDEO, reference_id=db_job.id, params=job_params
     )
 
     try:
-        fashn_id = await trigger_generic_fashn_job(db=db,model_name="image-to-video", inputs=input_data)
+        fashn_id = await trigger_generic_fashn_job(db=db, model_name="image-to-video", inputs=input_data)
         db_job.fashn_job_id = fashn_id
         db_job.status = models.JobStatus.PROCESSING
         db.commit()
         return StandardResponse(status=True, msg="Video rendering started", data={"job_id": db_job.id, "credits_deducted": cost})
-    except Exception as e:
-        db.rollback()
+        
+    except APIException as custom_err:
+        # Properly catch the custom Fashn out-of-credits message
+        db_job.status = models.JobStatus.FAILED
+        db.commit()
         SubscriptionTransactionManager.refund_resources(
-            db, subscription, cost, "image_to_video", quota_key=models.ResourceKey.IMAGE_TO_VIDEO, reference_id=db_job.id, reason=str(e)
+            db, subscription, cost, "image_to_video", quota_key=models.ResourceKey.IMAGE_TO_VIDEO, reference_id=db_job.id, reason=custom_err.msg, params=job_params
         )
-        raise APIException(status_code=200, msg=str(e))
+        raise custom_err
+
+    except Exception as e:
+        # Catch unexpected server/code crashes
+        logger.error(f"Unexpected crash in Image-to-Video: {str(e)}", exc_info=True)
+        db_job.status = models.JobStatus.FAILED
+        db.commit()
+        SubscriptionTransactionManager.refund_resources(
+            db, subscription, cost, "image_to_video", quota_key=models.ResourceKey.IMAGE_TO_VIDEO, reference_id=db_job.id, reason=str(e), params=job_params
+        )
+        raise APIException(status_code=500, msg="Failed to initiate AI core. Your credits have been refunded.")
 
 
 # ==============================================================================
@@ -417,6 +443,7 @@ async def change_background(
 ):
     await ensure_fashn_credits_available(db=db,min_required=1.0)
     # cost = SubscriptionTransactionManager.calculate_cost("change_background", subscription.plan_snapshot)
+    job_params = {"resolution": resolution}
     cost = SubscriptionTransactionManager.calculate_cost(db=db, subscription_plan_id=subscription.subscription_plan_id, action_key="change_background", params={"resolution": resolution})
 
     try:
@@ -467,12 +494,11 @@ async def change_background(
         db.commit()
         db.refresh(db_job)
 
-        SubscriptionTransactionManager.deduct_resources(db, subscription, cost, "change_background", reference_id=db_job.id)
+        SubscriptionTransactionManager.deduct_resources(db, subscription, cost, "change_background", reference_id=db_job.id, params=job_params)
 
     except Exception as e:
         db.rollback()
         raise APIException(status_code=200, msg=f"Database error while saving job: {str(e)}")
-
     try:
         background_tasks.add_task(
             process_advanced_background_chain,
@@ -599,6 +625,8 @@ async def model_create(
     db: Session = Depends(get_db),
     subscription: models.UserSubscription = Depends(PlanGatekeeper(feature_flag="create_model_enabled", resource_key=models.ResourceKey.MODEL_CREATION))
 ):
+    
+    job_params = {"num_images": num_images, "resolution": resolution, "face_reference": bool(face_reference)}
     await ensure_fashn_credits_available(db=db,min_required=1.0)
     # cost = SubscriptionTransactionManager.calculate_cost("model_create", subscription.plan_snapshot)
     cost = SubscriptionTransactionManager.calculate_cost(db=db, subscription_plan_id=subscription.subscription_plan_id, action_key="create_model", params={"resolution": resolution, "num_images": num_images})
@@ -689,7 +717,7 @@ async def model_create(
     db.refresh(db_job)
     
     SubscriptionTransactionManager.deduct_resources(
-        db, subscription, cost, "model_create", quota_key=models.ResourceKey.MODEL_CREATION, reference_id=db_job.id
+        db, subscription, cost, "model_create", quota_key=models.ResourceKey.MODEL_CREATION, reference_id=db_job.id, params=job_params
     )
 
     try:
@@ -705,11 +733,126 @@ async def model_create(
     except Exception as e:
         db.rollback()
         SubscriptionTransactionManager.refund_resources(
-            db, subscription, cost, "model_create", quota_key=models.ResourceKey.MODEL_CREATION, reference_id=db_job.id, reason=str(e)
+            db, subscription, cost, "model_create", quota_key=models.ResourceKey.MODEL_CREATION, reference_id=db_job.id, reason=str(e), params=job_params
         )
         raise APIException(status_code=200, msg=f"AI Engine failed: {str(e)}")
 
+# @router.get("/my-models", response_model=StandardResponse)
+# async def get_user_models(
+#     gender: Optional[str] = Query(None, description="Filter models by gender (e.g., 'Male' or 'Female')"), 
+#     skip: int = Query(0, ge=0, description="Number of records to skip for pagination"),
+#     limit: int = Query(20, ge=1, le=100, description="Max number of records to return"),
+#     db: Session = Depends(get_db),
+#     current_user: models.User = Depends(get_current_user)
+# ):
+#     try:
+#         base_query = db.query(models.StudioJob).filter(
+#             models.StudioJob.user_id == current_user.id,
+#             models.StudioJob.job_type == models.StudioJobType.MODEL_CREATE,
+#             models.StudioJob.status == models.JobStatus.COMPLETED,
+#             models.StudioJob.is_active == True
+#         )
 
+#         if gender:
+#             base_query = base_query.filter(
+#                 func.lower(func.json_unquote(func.json_extract(models.StudioJob.input_data, '$.attributes.gender'))) == gender.lower()
+#             )
+
+#         total_count = base_query.count()
+#         jobs = base_query.order_by(models.StudioJob.id.desc()).offset(skip).limit(limit).all()
+
+#         formatted_jobs = []
+#         for job in jobs:
+#             input_dict = job.input_data if isinstance(job.input_data, dict) else (json.loads(job.input_data) if job.input_data else {})
+#             prompt_text = input_dict.get("prompt", "")
+#             attributes = input_dict.get("attributes", {}) 
+            
+#             generated_images = []
+#             if job.result_urls:
+#                 generated_images = job.result_urls if isinstance(job.result_urls, list) else json.loads(job.result_urls)
+                
+#             job_status = job.status.value if hasattr(job.status, 'value') else job.status
+
+#             formatted_jobs.append({
+#                 "job_id": job.id,
+#                 "fashn_job_id": job.fashn_job_id,
+#                 "status": job_status,
+#                 "prompt": prompt_text,
+#                 "attributes": attributes,  
+#                 "generated_image_urls": generated_images, 
+#                 "created_at": job.created_at,
+#                 "updated_at": job.updated_at
+#             })
+
+#         return StandardResponse(
+#             status=True,
+#             msg="User models retrieved successfully.",
+#             data={
+#                 "total": total_count,
+#                 "skip": skip,
+#                 "limit": limit,
+#                 "jobs": formatted_jobs
+#             }
+#         )
+        
+#     except Exception as e:
+#         raise APIException(status_code=200, msg=f"Failed to fetch models: {str(e)}")
+
+
+# @router.get("/model-detail/{job_id}", response_model=StandardResponse)
+# async def get_model_detail(
+#     job_id: int = Path(..., description="The unique ID of the model job"),
+#     db: Session = Depends(get_db),
+#     current_user: models.User = Depends(get_current_user)
+# ):
+#     try:
+#         job = db.query(models.StudioJob).filter(
+#             models.StudioJob.id == job_id,
+#             models.StudioJob.user_id == current_user.id,
+#             models.StudioJob.job_type == models.StudioJobType.MODEL_CREATE,
+#             models.StudioJob.status == models.JobStatus.COMPLETED,
+#             models.StudioJob.is_active == True
+#         ).first()
+
+#         if not job:
+#             raise APIException(status_code=200, msg="Model not found or is no longer active.")
+
+#         input_dict = job.input_data if isinstance(job.input_data, dict) else (json.loads(job.input_data) if job.input_data else {})
+#         prompt_text = input_dict.get("prompt", "")
+#         attributes = input_dict.get("attributes", {}) 
+        
+#         generated_images = []
+#         if job.result_urls:
+#             generated_images = job.result_urls[0] if isinstance(job.result_urls, list) else json.loads(job.result_urls)
+            
+#         job_status = job.status.value if hasattr(job.status, 'value') else job.status
+
+#         formatted_job = {
+#             "job_id": job.id,
+#             "fashn_job_id": job.fashn_job_id,
+#             "status": job_status,
+#             "prompt": prompt_text,
+#             "attributes": attributes,
+#             "generated_image_urls": generated_images, 
+#             "created_at": job.created_at,
+#             "updated_at": job.updated_at
+#         }
+
+#         return StandardResponse(
+#             status=True,
+#             msg="Model detail retrieved successfully.",
+#             data=formatted_job
+#         )
+        
+#     except APIException:
+#         raise
+#     except Exception as e:
+#         raise APIException(status_code=200, msg=f"Failed to fetch model details: {str(e)}")
+
+
+# ==========================================
+# GET USER & ADMIN MODELS
+# ==========================================
 @router.get("/my-models", response_model=StandardResponse)
 async def get_user_models(
     gender: Optional[str] = Query(None, description="Filter models by gender (e.g., 'Male' or 'Female')"), 
@@ -719,8 +862,11 @@ async def get_user_models(
     current_user: models.User = Depends(get_current_user)
 ):
     try:
+        # Include models from both the current user and the Admin (user_id = 11)
+        allowed_user_ids = [current_user.id, 11]
+
         base_query = db.query(models.StudioJob).filter(
-            models.StudioJob.user_id == current_user.id,
+            models.StudioJob.user_id.in_(allowed_user_ids),
             models.StudioJob.job_type == models.StudioJobType.MODEL_CREATE,
             models.StudioJob.status == models.JobStatus.COMPLETED,
             models.StudioJob.is_active == True
@@ -748,6 +894,8 @@ async def get_user_models(
 
             formatted_jobs.append({
                 "job_id": job.id,
+                "user_id": job.user_id,
+                "is_admin_model": (job.user_id == 11),
                 "fashn_job_id": job.fashn_job_id,
                 "status": job_status,
                 "prompt": prompt_text,
@@ -772,6 +920,9 @@ async def get_user_models(
         raise APIException(status_code=200, msg=f"Failed to fetch models: {str(e)}")
 
 
+# ==========================================
+# GET MODEL DETAIL (USER & ADMIN)
+# ==========================================
 @router.get("/model-detail/{job_id}", response_model=StandardResponse)
 async def get_model_detail(
     job_id: int = Path(..., description="The unique ID of the model job"),
@@ -779,9 +930,12 @@ async def get_model_detail(
     current_user: models.User = Depends(get_current_user)
 ):
     try:
+        # Allow access if the model belongs to the current user OR Admin (user_id = 11)
+        allowed_user_ids = [current_user.id, 11]
+
         job = db.query(models.StudioJob).filter(
             models.StudioJob.id == job_id,
-            models.StudioJob.user_id == current_user.id,
+            models.StudioJob.user_id.in_(allowed_user_ids),
             models.StudioJob.job_type == models.StudioJobType.MODEL_CREATE,
             models.StudioJob.status == models.JobStatus.COMPLETED,
             models.StudioJob.is_active == True
@@ -796,12 +950,14 @@ async def get_model_detail(
         
         generated_images = []
         if job.result_urls:
-            generated_images = job.result_urls[0] if isinstance(job.result_urls, list) else json.loads(job.result_urls)
+            generated_images = job.result_urls if isinstance(job.result_urls, list) else json.loads(job.result_urls)
             
         job_status = job.status.value if hasattr(job.status, 'value') else job.status
 
         formatted_job = {
             "job_id": job.id,
+            "user_id": job.user_id,
+            "is_admin_model": (job.user_id == 11),
             "fashn_job_id": job.fashn_job_id,
             "status": job_status,
             "prompt": prompt_text,
@@ -887,6 +1043,8 @@ async def face_to_model(
     subscription: models.UserSubscription = Depends(PlanGatekeeper(feature_flag="face_to_model"))
 ):
     await ensure_fashn_credits_available(db=db,min_required=1.0)
+    
+    job_params = {"num_images": num_images, "resolution": resolution}
     # cost = SubscriptionTransactionManager.calculate_cost("face_to_model", subscription.plan_snapshot)
     cost = SubscriptionTransactionManager.calculate_cost(db=db, subscription_plan_id=subscription.subscription_plan_id, action_key="face_to_model", params={"resolution": resolution, "num_images": num_images})
     face_url = resolve_model_image_url(db, subscription.user_id, generated_model_job_id, face_image)
@@ -911,7 +1069,7 @@ async def face_to_model(
     db.commit()
     db.refresh(db_job)
 
-    SubscriptionTransactionManager.deduct_resources(db, subscription, cost, "face_to_model", reference_id=db_job.id)
+    SubscriptionTransactionManager.deduct_resources(db, subscription, cost, "face_to_model", reference_id=db_job.id, params=job_params)
 
     try:
         fashn_id = await trigger_generic_fashn_job(
@@ -926,5 +1084,5 @@ async def face_to_model(
         return StandardResponse(status=True, msg="Face-to-Model creation started.", data={"job_id": db_job.id, "credits_deducted": cost})
     except Exception as e:
         db.rollback()
-        SubscriptionTransactionManager.refund_resources(db, subscription, cost, "face_to_model", reference_id=db_job.id, reason=str(e))
+        SubscriptionTransactionManager.refund_resources(db, subscription, cost, "face_to_model", reference_id=db_job.id, reason=str(e), params=job_params)
         raise APIException(status_code=200, msg=f"AI Engine failed: {str(e)}")

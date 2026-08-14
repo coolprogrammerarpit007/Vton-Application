@@ -676,6 +676,12 @@ class MpxFashnApiPayment(Base):
         nullable=True
     )
     
+    # --- Running Passbook Snapshots ---
+    user_balance_after = Column(Integer, nullable=True, default=0)
+    fashn_balance_after = Column(DECIMAL(8, 2), nullable=True, default=0.00)
+    virtual_balance_after = Column(DECIMAL(8, 2), nullable=True, default=0.00) # <-- NEW
+    
+    
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     

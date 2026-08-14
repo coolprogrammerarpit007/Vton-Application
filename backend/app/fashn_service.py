@@ -55,18 +55,15 @@ async def check_fashn_master_balance() -> float:
 async def ensure_fashn_credits_available(db: Session, min_required: float = 0.10):
     """
     Pre-flight guard: Checks local Master Wallet to prevent latency.
-    Prevents dispatching generation jobs if upstream master wallet is depleted.
+    Optimized O(1) query using the Passbook Ledger model.
     """
-    cr_sum = db.query(func.sum(models.MpxFashnApiPayment.fashn_amount)).filter(
-        models.MpxFashnApiPayment.amount_type == 'cr'
-    ).scalar() or 0.0
-
-    dr_sum = db.query(func.sum(models.MpxFashnApiPayment.fashn_amount)).filter(
-        models.MpxFashnApiPayment.amount_type == 'dr'
-    ).scalar() or 0.0
-
-    # FIX: Cast to float individually BEFORE subtraction
-    wholesale_balance = float(cr_sum) - float(dr_sum)
+    latest_ledger_entry = (
+        db.query(models.MpxFashnApiPayment.fashn_balance_after)
+        .order_by(models.MpxFashnApiPayment.id.desc())
+        .first()
+    )
+                            
+    wholesale_balance = float(latest_ledger_entry[0]) if latest_ledger_entry and latest_ledger_entry[0] is not None else 0.0
 
     if wholesale_balance < min_required:
         logger.critical(f"[FASHN SERVICE] CIRCUIT BREAKER: Local Master wallet depleted ({wholesale_balance} remaining).")
@@ -74,7 +71,6 @@ async def ensure_fashn_credits_available(db: Session, min_required: float = 0.10
             status_code=200,
             msg="The AI generation engines are currently undergoing scheduled maintenance. Please try again shortly."
         )
-
 
 # ==========================================
 # 2. Virtual Try-On Engine (tryon-max)
@@ -159,20 +155,29 @@ async def trigger_vton_job(
                     raise APIException(status_code=200, msg="The AI generation engines are currently undergoing maintenance.")
 
                 if response.status_code == 429:
-                    error_data = response.json() if response.content else {}
-                    error_code = error_data.get("error", {}).get("name", "") or error_data.get("name", "")
-                    
-                    if response.status_code == 429:
+                    try:
                         error_data = response.json() if response.content else {}
-                        error_code = error_data.get("error", {}).get("name", "") or error_data.get("name", "")
+                    except Exception:
+                        error_data = response.text if response.content else ""
                     
+                    error_code = ""
+                    if isinstance(error_data, dict):
+                        err_obj = error_data.get("error", "")
+                        if isinstance(err_obj, dict):
+                            error_code = err_obj.get("name", "")
+                        else:
+                            error_code = str(err_obj)
+                    else:
+                        error_code = str(error_data)
+
                     if "OutOfCredits" in error_code or "insufficient" in str(error_data).lower():
                         logger.critical("[FASHN SERVICE] OutOfCredits (HTTP 429): Upstream master wallet exhausted.")
-                        raise APIException(status_code=200, msg="The AI generation engines are currently undergoing maintenance.")
+                        raise APIException(status_code=200, msg="The AI generation engines are currently undergoing maintenance. Please try again shortly.")
 
                     logger.warning(f"[FASHN SERVICE] Rate/Concurrency limit hit ({error_code}). Retrying in 4s...")
                     await asyncio.sleep(4)
                     continue
+
 
                 response.raise_for_status()
                 data = response.json()
@@ -289,11 +294,23 @@ async def trigger_generic_fashn_job(db:Session,model_name: str, inputs: dict) ->
                     raise APIException(status_code=200, msg="The AI generation engines are undergoing maintenance.")
 
                 if response.status_code == 429:
-                    error_data = response.json() if response.content else {}
-                    error_code = error_data.get("error", {}).get("name", "") or error_data.get("name", "")
+                    try:
+                        error_data = response.json() if response.content else {}
+                    except Exception:
+                        error_data = response.text if response.content else ""
                     
+                    error_code = ""
+                    if isinstance(error_data, dict):
+                        err_obj = error_data.get("error", "")
+                        if isinstance(err_obj, dict):
+                            error_code = err_obj.get("name", "")
+                        else:
+                            error_code = str(err_obj)
+                    else:
+                        error_code = str(error_data)
+
                     if "OutOfCredits" in error_code or "insufficient" in str(error_data).lower():
-                        raise APIException(status_code=200, msg="The AI generation engines are undergoing maintenance.")
+                        raise APIException(status_code=200, msg="The AI generation engines are undergoing maintenance. Please try again shortly.")
 
                     logger.warning(f"[FASHN SERVICE] Rate limit hit ({error_code}). Retrying in 4s...")
                     await asyncio.sleep(4)

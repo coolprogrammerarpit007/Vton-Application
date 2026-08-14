@@ -264,6 +264,71 @@ class SubscriptionTransactionManager:
     Now fully database-driven for dynamic admin control.
     """
     
+    
+    @staticmethod
+    def get_actual_fashn_cost(job_type: str, params: Optional[Dict[str, Any]] = None) -> float:
+        """
+        Maps feature keys to EXACT Fashn.ai wholesale compute costs.
+        Gracefully handles missing params with default production values.
+        """
+        job_key = (job_type or "").lower().strip()
+        params = params or {}
+
+        # 1. Image-to-Video Engine (Dynamic based on duration & resolution)
+        if job_key in ["image_to_video", "video_generation"]:
+            duration = int(params.get("duration", 5))
+            resolution = str(params.get("resolution", "1080p")).lower()
+
+            if duration >= 10:
+                video_cost_map = {"480p": 2.0, "720p": 6.0, "1080p": 12.0}
+            else:
+                video_cost_map = {"480p": 1.0, "720p": 3.0, "1080p": 6.0}
+
+            return video_cost_map.get(resolution, 6.0)
+
+        # 2. Local-only utilities (Cost $0 compute at Fashn)
+        if job_key == "smart_crop":
+            return 0.00
+
+        # 3. Static Wholesale Mapping for Image Endpoints (1k / Balanced defaults)
+        wholesale_pricing = {
+            "tryon": 2.0,
+            "vton": 2.0,
+            "three_sixty": 4.0,
+            "outerwear": 2.0,
+            "outfit": 4.0,
+            "product_to_model": 2.0,
+            "model_create": 1.0,
+            "model_swap": 1.0,
+            "face_to_model": 1.0,
+            "change_background": 1.0,
+            "background_remove": 1.0,
+        }
+
+        base_cost = wholesale_pricing.get(job_key, 1.0)
+
+        if params.get("face_reference"):
+            base_cost += 3.0
+
+        num_images = int(params.get("num_images", 1))
+        return float(base_cost * max(1, num_images))
+
+    @staticmethod
+    def _get_current_master_balances(db: Session) -> tuple[float, float]:
+        """Returns (current_fashn_balance, current_virtual_balance)"""
+        latest_entry = (
+            db.query(models.MpxFashnApiPayment)
+            .order_by(models.MpxFashnApiPayment.id.desc())
+            .first()
+        )
+        if latest_entry:
+            fashn_bal = float(latest_entry.fashn_balance_after) if latest_entry.fashn_balance_after is not None else 0.0
+            virt_bal = float(latest_entry.virtual_balance_after) if latest_entry.virtual_balance_after is not None else 0.0
+            return fashn_bal, virt_bal
+
+        # Fallback if table is completely empty
+        return 0.0, 0.0
+    
     @staticmethod
     def calculate_cost(
         db: Session, 
@@ -323,7 +388,9 @@ class SubscriptionTransactionManager:
         cost: int, 
         job_type: str,
         quota_key: Optional[models.ResourceKey] = None,
-        reference_id: int = None
+        reference_id: int = None,
+        params: Optional[Dict[str, Any]] = None
+        
     ):
         # 1. Validate Credit Balance
         if subscription.credits_remaining < cost:
@@ -350,20 +417,24 @@ class SubscriptionTransactionManager:
         db.add(log_entry)
         
         
-        # 4. NEW: Automatically Log Debit Entry in Master Wallet Table
-        # Converts virtual credits to estimated wholesale compute (assuming ~1:5 ratio)
-        estimated_fashn_units = round(cost / 5.0, 2)
+        exact_fashn_cost = SubscriptionTransactionManager.get_actual_fashn_cost(job_type, params=params)
+        current_fashn_bal, current_virt_bal = SubscriptionTransactionManager._get_current_master_balances(db)
+        
+        new_fashn_balance = round(current_fashn_bal - exact_fashn_cost, 2)
+        new_virtual_balance = round(current_virt_bal - float(cost), 2) # <-- Deducting the virtual cost
         
         master_debit = models.MpxFashnApiPayment(
             user_id=subscription.user_id,
             api_type="WALLET AMOUNT",
-            fashn_amount=estimated_fashn_units,
+            fashn_amount=exact_fashn_cost,
             amount=float(cost),
             comment=f"Debit for {job_type} (Job Ref: {reference_id})",
-            amount_type="dr"
+            amount_type="dr",
+            user_balance_after=subscription.credits_remaining,
+            fashn_balance_after=new_fashn_balance,
+            virtual_balance_after=new_virtual_balance # <-- Saving the snapshot
         )
         db.add(master_debit)
-
         # 4. Increment Volume Quota (if applicable)
         if quota_key:
             usage_record = db.query(models.UserPlanResourceUsage).filter(
@@ -391,7 +462,8 @@ class SubscriptionTransactionManager:
         job_type: str,
         quota_key: Optional[models.ResourceKey] = None,
         reference_id: int = None,
-        reason: str = "Job Failed"
+        reason: str = "Job Failed",
+        params: Optional[Dict[str, Any]] = None
     ):
         # 1. Restore Credit Balance
         subscription.credits_remaining += cost
@@ -410,15 +482,22 @@ class SubscriptionTransactionManager:
         db.add(log_entry)
         
         
-        # 3. NEW: Credit Back to Master Wallet Table
-        estimated_fashn_units = round(cost / 5.0, 2)
+        exact_fashn_cost = SubscriptionTransactionManager.get_actual_fashn_cost(job_type, params=params)
+        current_fashn_bal, current_virt_bal = SubscriptionTransactionManager._get_current_master_balances(db)
+        
+        new_fashn_balance = round(current_fashn_bal + exact_fashn_cost, 2)
+        new_virtual_balance = round(current_virt_bal + float(cost), 2) # <-- Refunding the virtual cost
+        
         master_credit = models.MpxFashnApiPayment(
             user_id=subscription.user_id,
             api_type="WALLET AMOUNT",
-            fashn_amount=estimated_fashn_units,
+            fashn_amount=exact_fashn_cost,
             amount=float(cost),
             comment=f"Refund for failed {job_type} (Job Ref: {reference_id})",
-            amount_type="cr"
+            amount_type="cr",
+            user_balance_after=subscription.credits_remaining,
+            fashn_balance_after=new_fashn_balance,
+            virtual_balance_after=new_virtual_balance # <-- Saving the snapshot
         )
         db.add(master_credit)
 

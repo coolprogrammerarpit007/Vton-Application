@@ -360,10 +360,12 @@ async def create_tryon_job(
         db.add(db_job)
         db.commit()
         db.refresh(db_job)
+        
+        job_params = {"num_images": num_images, "resolution": resolution}
 
         # 4. Deduct Credits Atomically
         SubscriptionTransactionManager.deduct_resources(
-            db, subscription, cost, "tryon", reference_id=db_job.id
+            db, subscription, cost, "tryon", reference_id=db_job.id, params=job_params
         )
 
     except APIException:
@@ -411,21 +413,22 @@ async def create_tryon_job(
         )
         
     except APIException as custom_err:
-        # Preserve specific error message and refund credits
+        # Fashn Circuit Breaker or Upstream Logic Error (402, 429, etc.)
         db_job.status = models.JobStatus.FAILED
         db.commit()
         SubscriptionTransactionManager.refund_resources(
-            db, subscription, cost, "tryon", reference_id=db_job.id, reason=custom_err.msg
+            db, subscription, cost, "tryon", reference_id=db_job.id, reason=custom_err.msg, params=job_params
         )
         raise custom_err
 
     except Exception as api_error:
+        # Unexpected Server Crash / Timeout
         logger.error(f"FASHN API Trigger failed for Job {db_job.id}: {str(api_error)}", exc_info=True)
         db_job.status = models.JobStatus.FAILED
         db.commit()
 
         SubscriptionTransactionManager.refund_resources(
-            db, subscription, cost, "tryon", reference_id=db_job.id, reason=str(api_error)
+            db, subscription, cost, "tryon", reference_id=db_job.id, reason=str(api_error), params=job_params
         )
         raise APIException(status_code=200, msg="Failed to initiate AI core. Your credits have been refunded.")
 
