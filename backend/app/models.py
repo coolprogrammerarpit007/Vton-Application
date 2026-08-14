@@ -263,8 +263,9 @@ class PasswordResetOTP(Base):
     reset_token = Column(String(255), nullable=True, index=True)
     is_used = Column(Boolean, default=False, nullable=False)
     expires_at = Column(DateTime, nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    # Change server_default=func.now() to default=func.now()
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now(), nullable=False)
 
 class TicketStatus(str, enum.Enum):
     OPEN = "OPEN"
