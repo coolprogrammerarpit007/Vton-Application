@@ -42,9 +42,9 @@ async def api_smart_crop(
     
     # cost = SubscriptionTransactionManager.calculate_cost("smart_crop", subscription.plan_snapshot)
     cost = SubscriptionTransactionManager.calculate_cost(
-    db=db, 
-    subscription_plan_id=subscription.subscription_plan_id, 
-    action_key="smart_crop"
+        db=db, 
+        subscription_plan_id=subscription.subscription_plan_id, 
+        action_key="smart_crop"
     )
     
     # 1. Stream input file down into localized scratch disks
@@ -55,27 +55,66 @@ async def api_smart_crop(
     cropped_filename = f"crop_{uuid.uuid4().hex}.{file_ext}"
     cropped_path = os.path.join(UPLOAD_DIR, cropped_filename)
     
-    # 2. Deduct upfront
-    SubscriptionTransactionManager.deduct_resources(db, subscription, cost, "smart_crop")
+    
+    base_url = settings.BACKEND_URL.rstrip("/")
+    original_url = f"{base_url}/static_uploads/{original_filename}"
+
+    # 2. Database Job Creation
+    # Assuming you have a SmartCropJob model. Adjust the model name if it differs.
+    db_job = models.SmartCropJob(
+        user_id=subscription.user_id,
+        input_image_url=original_url,
+        target_ratio=target_ratio,
+        status=models.JobStatus.PENDING
+    )
+    db.add(db_job)
+    db.commit()
+    db.refresh(db_job)
+    
+    # 3. Deduct upfront & link the reference_id
+    SubscriptionTransactionManager.deduct_resources(
+        db, 
+        subscription, 
+        cost, 
+        "smart_crop", 
+        reference_id=db_job.id
+    )
 
     try:
+        # 4. Execute the smart crop algorithm
         process_smart_crop(original_path, cropped_path, target_ratio)
         
-        base_url = settings.BACKEND_URL.rstrip("/")
+        cropped_url = f"{base_url}/static_uploads/{cropped_filename}"
+        
+        # 5. Mark Job as Completed
+        db_job.status = models.JobStatus.COMPLETED
+        db_job.result_image_url = cropped_url
+        db.commit()
         
         return StandardResponse(
             status=True,
             msg="Image intelligently adjusted and reframed successfully.",
             data={
-                "original_url": f"{base_url}/static_uploads/{original_filename}",
-                "cropped_url": f"{base_url}/static_uploads/{cropped_filename}",
+                "job_id": db_job.id,
+                "original_url": original_url,
+                "cropped_url": cropped_url,
                 "aspect_ratio": target_ratio,
                 "credits_deducted": cost
             }
         )
 
     except Exception as e:
-        # Refund on engine failure
-        SubscriptionTransactionManager.refund_resources(db, subscription, cost, "smart_crop", reason=str(e))
+        # 6. Refund on engine failure and mark Job as Failed
+        db_job.status = models.JobStatus.FAILED
+        db.commit()
+        
+        SubscriptionTransactionManager.refund_resources(
+            db, 
+            subscription, 
+            cost, 
+            "smart_crop", 
+            reference_id=db_job.id, 
+            reason=str(e)
+        )
         logger.error(f"Critical execution fault: {str(e)}", exc_info=True)
         raise APIException(status_code=500, msg="Internal processor error.")

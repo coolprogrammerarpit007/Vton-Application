@@ -388,12 +388,15 @@ def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db
         ).update({"is_used": True})
 
         otp_code = generate_otp()
-        expiry_time = datetime.utcnow() + timedelta(minutes=10)
+        created_time = datetime.utcnow() + timedelta(hours=5.5)
+        expiry_time = created_time + timedelta(minutes=10)
 
         otp_record = models.PasswordResetOTP(
             user_id=user.id,
             otp=otp_code,
             expires_at=expiry_time,
+            created_at=created_time,
+            updated_at=created_time,
             is_used=False
         )
         db.add(otp_record)

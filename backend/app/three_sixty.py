@@ -68,6 +68,7 @@ async def process_dynamic_generation_chain(
             final_description = build_360_angle_prompt(pos, garment_desc)
 
             fashn_id = await trigger_vton_job(
+                db=db,
                 model_image_url=person_url,
                 garment_image_url=garment_url,
                 category=category.value,
@@ -168,7 +169,7 @@ async def create_360_job(
     base_url = settings.BACKEND_URL.rstrip("/")
 
     # Pre-flight check on master wallet
-    await ensure_fashn_credits_available(min_required=1.0)
+    await ensure_fashn_credits_available(db=db,min_required=1.0)
 
     try:
         # 1. Resolve Garment Source

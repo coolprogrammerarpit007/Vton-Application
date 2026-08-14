@@ -3,8 +3,12 @@ import asyncio
 import json
 import logging
 from typing import Tuple, Optional, Any
+from sqlalchemy.orm import Session
+from sqlalchemy import func
+
 from app.config import settings
 from app.exceptions import APIException
+from . import models
 
 # ==========================================
 # 1. Inherit the master logger from main.py
@@ -30,15 +34,14 @@ HTTP_TIMEOUT = httpx.Timeout(45.0, connect=15.0)
 # ==========================================
 async def check_fashn_master_balance() -> float:
     """
-    Queries Fashn.ai master account credit balance.
+    Queries Fashn.ai master account credit balance directly via HTTP.
+    (Kept for Admin Syncing and Payment initialization checks, not used for per-job latency).
     """
     async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=10.0)) as client:
         try:
             response = await client.get(FASHN_ACCOUNT_URL, headers=COMMON_HEADERS)
             if response.status_code == 200:
                 data = response.json()
-                
-                # FIX: Extract the nested 'credits' dictionary first, then grab 'total'
                 credits_data = data.get("credits", {})
                 return float(credits_data.get("total", 0.0))
                 
@@ -49,13 +52,24 @@ async def check_fashn_master_balance() -> float:
             return -1.0
         
         
-async def ensure_fashn_credits_available(min_required: float = 1.0):
+async def ensure_fashn_credits_available(db: Session, min_required: float = 0.10):
     """
-    Pre-flight guard: Prevents dispatching generation jobs if upstream master wallet is depleted.
+    Pre-flight guard: Checks local Master Wallet to prevent latency.
+    Prevents dispatching generation jobs if upstream master wallet is depleted.
     """
-    balance = await check_fashn_master_balance()
-    if 0.0 <= balance < min_required:
-        logger.critical(f"[FASHN SERVICE] CIRCUIT BREAKER: Master wallet credits depleted ({balance} remaining).")
+    cr_sum = db.query(func.sum(models.MpxFashnApiPayment.fashn_amount)).filter(
+        models.MpxFashnApiPayment.amount_type == 'cr'
+    ).scalar() or 0.0
+
+    dr_sum = db.query(func.sum(models.MpxFashnApiPayment.fashn_amount)).filter(
+        models.MpxFashnApiPayment.amount_type == 'dr'
+    ).scalar() or 0.0
+
+    # FIX: Cast to float individually BEFORE subtraction
+    wholesale_balance = float(cr_sum) - float(dr_sum)
+
+    if wholesale_balance < min_required:
+        logger.critical(f"[FASHN SERVICE] CIRCUIT BREAKER: Local Master wallet depleted ({wholesale_balance} remaining).")
         raise APIException(
             status_code=200,
             msg="The AI generation engines are currently undergoing scheduled maintenance. Please try again shortly."
@@ -67,6 +81,7 @@ async def ensure_fashn_credits_available(min_required: float = 1.0):
 # ==========================================
 
 async def trigger_vton_job(
+    db:Session,
     model_image_url: str, 
     garment_image_url: str, 
     category: str, 
@@ -80,8 +95,8 @@ async def trigger_vton_job(
     Asynchronously fires the structured payload containing assets and prompts to the FASHN.ai tryon-max model.
     """
     
-    # 1. Pre-flight check
-    await ensure_fashn_credits_available(min_required=0.05)
+    # 1. Local Database Pre-flight check
+    await ensure_fashn_credits_available(db, min_required=0.05)
     
     logger.info(f"[FASHN SERVICE] Triggering VTON job for category '{category}' (Mode: {generation_mode})")
     
@@ -147,8 +162,12 @@ async def trigger_vton_job(
                     error_data = response.json() if response.content else {}
                     error_code = error_data.get("error", {}).get("name", "") or error_data.get("name", "")
                     
+                    if response.status_code == 429:
+                        error_data = response.json() if response.content else {}
+                        error_code = error_data.get("error", {}).get("name", "") or error_data.get("name", "")
+                    
                     if "OutOfCredits" in error_code or "insufficient" in str(error_data).lower():
-                        logger.critical("[FASHN SERVICE] OutOfCredits (HTTP 429): Master wallet exhausted.")
+                        logger.critical("[FASHN SERVICE] OutOfCredits (HTTP 429): Upstream master wallet exhausted.")
                         raise APIException(status_code=200, msg="The AI generation engines are currently undergoing maintenance.")
 
                     logger.warning(f"[FASHN SERVICE] Rate/Concurrency limit hit ({error_code}). Retrying in 4s...")
@@ -242,11 +261,12 @@ async def check_vton_status(fashn_job_id: str) -> Tuple[str, Optional[Any]]:
 # ==========================================
 # 4. Universal Engine Dispatcher
 # ==========================================
-async def trigger_generic_fashn_job(model_name: str, inputs: dict) -> str:
+async def trigger_generic_fashn_job(db:Session,model_name: str, inputs: dict) -> str:
     """
     Universal service for auxiliary Fashn models (model-create, model-swap, etc.).
     """
-    await ensure_fashn_credits_available(min_required=1.0)
+    # 1. Local Database Pre-flight check
+    await ensure_fashn_credits_available(db=db,min_required=0.10)
 
     logger.info(f"[FASHN SERVICE] Initializing generic task for model: '{model_name}'")
     payload = {

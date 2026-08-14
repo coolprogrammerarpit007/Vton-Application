@@ -278,6 +278,7 @@ async def process_outfit_chain(
             logger.info(f"Layer [{garment.layer_category.value}] Fashn Category: '{fashn_category}' | Prompt: '{dynamic_prompt}'")
 
             fashn_id = await trigger_vton_job(
+                db=db,  
                 model_image_url=current_base_image,
                 garment_image_url=garment_url,
                 category=fashn_category,
@@ -351,7 +352,7 @@ async def create_outfit_job(
     base_url = settings.BACKEND_URL.rstrip('/')
     
     # 1. Pre-flight check on upstream Fashn master wallet credits
-    await ensure_fashn_credits_available(min_required=1.0)
+    await ensure_fashn_credits_available(db=db,min_required=1.0)
     
     # 1. Always calculate as Outerwear (Flat 6 Credits for Gold/Platinum)
     # cost = SubscriptionTransactionManager.calculate_cost("outerwear", subscription.plan_snapshot)
@@ -402,7 +403,7 @@ async def create_outfit_job(
 
     # 4. Database Job Creation
     db_job = models.OutfitJob(
-        user_id=subscription.user_id, person_image_url=person_url,top_closet_id=top_closet_id,bottom_closet_id=bottom_closet_id,outerwear_closet_id=outerwear_closet_id ,status=models.JobStatus.PENDING, styling_prompt=outfit_desc
+        user_id=subscription.user_id, person_image_url=person_url,top_closet_id=top_closet_id,bottom_closet_id=bottom_closet_id,outwear_closet_id=outerwear_closet_id ,status=models.JobStatus.PENDING, styling_prompt=outfit_desc
     )
     db.add(db_job)
     db.commit()

@@ -73,17 +73,27 @@ async def initiate_payment(
         logger.error(f"Initiate failed: No active plan found matching '{req.plan_name}'")
         raise APIException(status_code=200, msg=f"Invalid or inactive subscription plan '{req.plan_name}' selected.")
     
-    # --- PRE-FLIGHT CHECK: Verify Fashn Master Credits vs Plan Credits ---
+    # --- PRE-FLIGHT CHECK: Calculate Internal Virtual Reserve from mpx_fashn_api_payments ---
     plan_required_credits = plan.credits or 0
-    fashn_balance = await check_fashn_master_balance()
     
-    if fashn_balance >= 0 and fashn_balance < plan_required_credits:
+    cr_sum = db.query(func.sum(models.MpxFashnApiPayment.amount)).filter(
+        models.MpxFashnApiPayment.amount_type == 'cr'
+    ).scalar() or 0.0
+
+    dr_sum = db.query(func.sum(models.MpxFashnApiPayment.amount)).filter(
+        models.MpxFashnApiPayment.amount_type == 'dr'
+    ).scalar() or 0.0
+    
+    virtual_reserve = float(cr_sum - dr_sum)    
+    # fashn_balance = await check_fashn_master_balance()
+    
+    if virtual_reserve < plan_required_credits:
         logger.critical(
-            f"[PAYMENT INITIATE BLOCKED] Fashn master balance ({fashn_balance}) is less than plan credits ({plan_required_credits})."
+            f"[PAYMENT INITIATE BLOCKED] Master Virtual Reserve ({virtual_reserve}) is less than plan credits ({plan_required_credits})."
         )
         raise APIException(
             status_code=200,
-            msg="Subscription purchases are temporarily paused due to upstream maintenance. Please try again shortly."
+            msg="Subscription purchases are temporarily paused due to maximum capacity. Please try again shortly."
         )
     
     user_firstname = current_user.full_name or current_user.username

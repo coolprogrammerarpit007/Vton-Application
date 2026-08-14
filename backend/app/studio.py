@@ -86,7 +86,7 @@ async def product_to_model(
     db: Session = Depends(get_db),
     subscription: models.UserSubscription = Depends(PlanGatekeeper(feature_flag="product_to_model"))
 ):
-    await ensure_fashn_credits_available(min_required=1.0)
+    await ensure_fashn_credits_available(db=db,min_required=1.0)
 
     if resolution == "4k" and subscription.plan_snapshot.get("image_quality", "2k") == "2k":
         raise APIException(status_code=200, msg="4K render quality requires the Gold or Platinum plan.")
@@ -140,6 +140,7 @@ async def product_to_model(
 
     try:
         fashn_id = await trigger_generic_fashn_job(
+            db=db,
             model_name="product-to-model",
             inputs=input_data
         )
@@ -184,7 +185,7 @@ async def model_swap(
     db: Session = Depends(get_db),
     subscription: models.UserSubscription = Depends(PlanGatekeeper(feature_flag="model_swap"))
 ):
-    await ensure_fashn_credits_available(min_required=1.0)
+    await ensure_fashn_credits_available(db=db,min_required=1.0)
     # cost = SubscriptionTransactionManager.calculate_cost("model_swap", subscription.plan_snapshot)
     cost = SubscriptionTransactionManager.calculate_cost(db=db, subscription_plan_id=subscription.subscription_plan_id, action_key="model_swap", params={"resolution": resolution, "num_images": num_images})
     
@@ -220,6 +221,7 @@ async def model_swap(
 
     try:
         fashn_id = await trigger_generic_fashn_job(
+            db=db,
             model_name="model-swap",
             inputs=input_data
         )
@@ -249,7 +251,7 @@ async def image_to_video(
     db: Session = Depends(get_db),
     subscription: models.UserSubscription = Depends(PlanGatekeeper(resource_key=models.ResourceKey.IMAGE_TO_VIDEO))
 ):
-    await ensure_fashn_credits_available(min_required=1.0)
+    await ensure_fashn_credits_available(db=db,min_required=1.0)
 
     if resolution and not resolution.endswith("p"):
         resolution = f"{resolution}p"
@@ -298,7 +300,7 @@ async def image_to_video(
     )
 
     try:
-        fashn_id = await trigger_generic_fashn_job(model_name="image-to-video", inputs=input_data)
+        fashn_id = await trigger_generic_fashn_job(db=db,model_name="image-to-video", inputs=input_data)
         db_job.fashn_job_id = fashn_id
         db_job.status = models.JobStatus.PROCESSING
         db.commit()
@@ -334,6 +336,7 @@ async def process_advanced_background_chain(
         db.commit()
 
         bg_remove_id = await trigger_generic_fashn_job(
+            db=db,
             model_name="background-remove",
             inputs={"image": original_url}
         )
@@ -359,6 +362,7 @@ async def process_advanced_background_chain(
             edit_inputs["image_context"] = reference_bg_url
 
         bg_gen_id = await trigger_generic_fashn_job(
+            db=db,
             model_name="edit",  
             inputs=edit_inputs
         )
@@ -411,7 +415,7 @@ async def change_background(
     db: Session = Depends(get_db),
     subscription: models.UserSubscription = Depends(PlanGatekeeper(feature_flag="change_background"))
 ):
-    await ensure_fashn_credits_available(min_required=1.0)
+    await ensure_fashn_credits_available(db=db,min_required=1.0)
     # cost = SubscriptionTransactionManager.calculate_cost("change_background", subscription.plan_snapshot)
     cost = SubscriptionTransactionManager.calculate_cost(db=db, subscription_plan_id=subscription.subscription_plan_id, action_key="change_background", params={"resolution": resolution})
 
@@ -595,7 +599,7 @@ async def model_create(
     db: Session = Depends(get_db),
     subscription: models.UserSubscription = Depends(PlanGatekeeper(feature_flag="create_model_enabled", resource_key=models.ResourceKey.MODEL_CREATION))
 ):
-    await ensure_fashn_credits_available(min_required=1.0)
+    await ensure_fashn_credits_available(db=db,min_required=1.0)
     # cost = SubscriptionTransactionManager.calculate_cost("model_create", subscription.plan_snapshot)
     cost = SubscriptionTransactionManager.calculate_cost(db=db, subscription_plan_id=subscription.subscription_plan_id, action_key="create_model", params={"resolution": resolution, "num_images": num_images})
     if custom_prompt and custom_prompt.strip():
@@ -690,6 +694,7 @@ async def model_create(
 
     try:
         fashn_id = await trigger_generic_fashn_job(
+            db=db,
             model_name="model-create",
             inputs=fashn_input_data
         )
@@ -881,7 +886,7 @@ async def face_to_model(
     db: Session = Depends(get_db),
     subscription: models.UserSubscription = Depends(PlanGatekeeper(feature_flag="face_to_model"))
 ):
-    await ensure_fashn_credits_available(min_required=1.0)
+    await ensure_fashn_credits_available(db=db,min_required=1.0)
     # cost = SubscriptionTransactionManager.calculate_cost("face_to_model", subscription.plan_snapshot)
     cost = SubscriptionTransactionManager.calculate_cost(db=db, subscription_plan_id=subscription.subscription_plan_id, action_key="face_to_model", params={"resolution": resolution, "num_images": num_images})
     face_url = resolve_model_image_url(db, subscription.user_id, generated_model_job_id, face_image)
@@ -910,6 +915,7 @@ async def face_to_model(
 
     try:
         fashn_id = await trigger_generic_fashn_job(
+            db=db,
             model_name="face-to-model",
             inputs=input_data
         )

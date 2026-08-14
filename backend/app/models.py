@@ -645,3 +645,54 @@ class UniversalConfig(Base):
         onupdate=func.now(),
         nullable=False,
     )
+    
+    
+    
+    
+    
+    
+# **************************************** Subscription Planning **********************************
+
+class MpxFashnApiPayment(Base):
+    __tablename__ = "mpx_fashn_api_payments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
+    
+    # Matches exact MySQL ENUM: 'WALLET AMOUNT', 'SUBSCRIPTION PLAN'
+    api_type = Column(
+        Enum('WALLET AMOUNT', 'SUBSCRIPTION PLAN', name='mpx_api_type_enum'), 
+        nullable=True
+    )
+    
+    fashn_amount = Column(DECIMAL(8, 2), default=0.00)
+    amount = Column(DECIMAL(8, 2), default=0.00, nullable=False)
+    comment = Column(String(191), nullable=True)
+    
+    # Matches exact MySQL ENUM: 'cr', 'dr'
+    amount_type = Column(
+        Enum('cr', 'dr', name='mpx_amount_type_enum'), 
+        nullable=True
+    )
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    
+    
+# ************* Models for smart crop **********************
+
+class SmartCropJob(Base):
+    __tablename__ = "smart_crop_jobs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    
+    input_image_url = Column(String(255), nullable=True)
+    target_ratio = Column(String(50), nullable=True)
+    result_image_url = Column(String(255), nullable=True)
+    
+    status = Column(Enum(JobStatus), default=JobStatus.PENDING)
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())

@@ -258,133 +258,6 @@ class PlanGatekeeper:
 
 
 class SubscriptionTransactionManager:
-    """
-    Utility class to handle atomic deduction and refund of credits and volume quotas.
-    """
-    
-    # @staticmethod
-    # def calculate_cost(task_type: str, snapshot: Dict[str, Any], params: Dict[str, Any] = {}) -> int:
-    #     plan_name = snapshot.get("plan_name", "").lower()
-    #     is_silver_or_free = "silver" in plan_name or "free" in plan_name
-
-    #     if task_type == "photoshoot_image":
-    #         quality = params.get("image_quality", "2k")
-    #         if quality == "2k":
-    #             return 2
-    #         elif quality == "4k":
-    #             return 6 if "gold" in plan_name else 4
-
-    #     elif task_type == "video_generation":
-    #         resolution = params.get("resolution", "480p")
-    #         if resolution == "480p":
-    #             return 6 if is_silver_or_free else (5 if "gold" in plan_name else 4)
-    #         elif resolution == "720p":
-    #             return 8 if "gold" in plan_name else 5
-    #         elif resolution == "1080p":
-    #             return 6
-
-    #     elif task_type == "model_create":
-    #         return 10 if "gold" in plan_name else 7
-
-    #     elif task_type in ["face_to_model", "model_swap"]:
-    #         return 5 if "gold" in plan_name else 4
-            
-    #     elif task_type == "outerwear":
-    #         return 6 if "gold" in plan_name else 4
-
-    #     return 2  # Default fallback cost
-
-    # @staticmethod
-    # def deduct_resources(
-    #     db: Session, 
-    #     subscription: models.UserSubscription, 
-    #     cost: int, 
-    #     job_type: str,
-    #     quota_key: Optional[models.ResourceKey] = None,
-    #     reference_id: int = None
-    # ):
-    #     # 1. Validate Credit Balance
-    #     if subscription.credits_remaining < cost:
-    #         logger.warning(f"Ledger Block: User {subscription.user_id} insufficient credits for {job_type}. Cost: {cost}, Balance: {subscription.credits_remaining}")
-    #         raise APIException(
-    #             status_code=200,
-    #             msg=f"Insufficient credits. Required: {cost}, Available: {subscription.credits_remaining}"
-    #         )
-
-    #     # 2. Update Credit Balance
-    #     subscription.credits_remaining -= cost
-        
-    #     # 3. Write to Immutable Ledger
-    #     log_entry = models.UserResourceUsageLog(
-    #         user_id=subscription.user_id,
-    #         user_subscription_id=subscription.id,
-    #         resource_key=models.ResourceKey.CREDITS,
-    #         delta=-cost,
-    #         used_after=subscription.credits_remaining,
-    #         reference_type=job_type,
-    #         reference_id=reference_id,
-    #         description=f"Deduction for {job_type}"
-    #     )
-    #     db.add(log_entry)
-
-    #     # 4. Increment Volume Quota (if applicable)
-    #     if quota_key:
-    #         usage_record = db.query(models.UserPlanResourceUsage).filter(
-    #             models.UserPlanResourceUsage.user_subscription_id == subscription.id,
-    #             models.UserPlanResourceUsage.resource_key == quota_key
-    #         ).first()
-            
-    #         if usage_record:
-    #             usage_record.used_value += 1
-
-    #     # 5. Commit Atomic Transaction
-    #     try:
-    #         db.commit()
-    #         db.refresh(subscription)
-    #     except IntegrityError as e:
-    #         db.rollback()
-    #         logger.error(f"Ledger Integrity Error for User {subscription.user_id}: {str(e)}")
-    #         raise APIException(status_code=200, msg="Transaction collision. Please try again.")
-
-    # @staticmethod
-    # def refund_resources(
-    #     db: Session, 
-    #     subscription: models.UserSubscription, 
-    #     cost: int, 
-    #     job_type: str,
-    #     quota_key: Optional[models.ResourceKey] = None,
-    #     reference_id: int = None,
-    #     reason: str = "Job Failed"
-    # ):
-    #     # 1. Restore Credit Balance
-    #     subscription.credits_remaining += cost
-        
-    #     # 2. Write Refund to Immutable Ledger
-    #     log_entry = models.UserResourceUsageLog(
-    #         user_id=subscription.user_id,
-    #         user_subscription_id=subscription.id,
-    #         resource_key=models.ResourceKey.CREDITS,
-    #         delta=cost,
-    #         used_after=subscription.credits_remaining,
-    #         reference_type=job_type,
-    #         reference_id=reference_id,
-    #         description=f"Refund for {job_type}: {reason}"
-    #     )
-    #     db.add(log_entry)
-
-    #     # 3. Decrement Volume Quota (if applicable)
-    #     if quota_key:
-    #         usage_record = db.query(models.UserPlanResourceUsage).filter(
-    #             models.UserPlanResourceUsage.user_subscription_id == subscription.id,
-    #             models.UserPlanResourceUsage.resource_key == quota_key
-    #         ).first()
-            
-    #         if usage_record and usage_record.used_value > 0:
-    #             usage_record.used_value -= 1
-
-    #     db.commit()
-    
-    
     
     """
     Utility class to handle atomic deduction and refund of credits and volume quotas.
@@ -475,6 +348,21 @@ class SubscriptionTransactionManager:
             description=f"Deduction for {job_type}"
         )
         db.add(log_entry)
+        
+        
+        # 4. NEW: Automatically Log Debit Entry in Master Wallet Table
+        # Converts virtual credits to estimated wholesale compute (assuming ~1:5 ratio)
+        estimated_fashn_units = round(cost / 5.0, 2)
+        
+        master_debit = models.MpxFashnApiPayment(
+            user_id=subscription.user_id,
+            api_type="WALLET AMOUNT",
+            fashn_amount=estimated_fashn_units,
+            amount=float(cost),
+            comment=f"Debit for {job_type} (Job Ref: {reference_id})",
+            amount_type="dr"
+        )
+        db.add(master_debit)
 
         # 4. Increment Volume Quota (if applicable)
         if quota_key:
@@ -520,8 +408,21 @@ class SubscriptionTransactionManager:
             description=f"Refund for {job_type}: {reason}"
         )
         db.add(log_entry)
+        
+        
+        # 3. NEW: Credit Back to Master Wallet Table
+        estimated_fashn_units = round(cost / 5.0, 2)
+        master_credit = models.MpxFashnApiPayment(
+            user_id=subscription.user_id,
+            api_type="WALLET AMOUNT",
+            fashn_amount=estimated_fashn_units,
+            amount=float(cost),
+            comment=f"Refund for failed {job_type} (Job Ref: {reference_id})",
+            amount_type="cr"
+        )
+        db.add(master_credit)
 
-        # 3. Decrement Volume Quota (if applicable)
+        # 4. Decrement Volume Quota (if applicable)
         if quota_key:
             usage_record = db.query(models.UserPlanResourceUsage).filter(
                 models.UserPlanResourceUsage.user_subscription_id == subscription.id,

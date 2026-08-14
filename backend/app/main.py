@@ -381,6 +381,7 @@ async def create_tryon_job(
     try:
         logger.info(f"Dispatching Job ID {db_job.id} to FASHN API Engine (Resolution: {resolution}, Samples: {num_images})...")
         fashn_job_id = await trigger_vton_job(
+            db=db,
             model_image_url=person_url, 
             garment_image_url=garment_url, 
             category=category.value, 
@@ -680,12 +681,12 @@ async def get_universal_configurations(db: Session = Depends(get_db)):
                 {"label": item.label, "value": val}
             )
 
-        # 2. Fetch aspect ratios dynamically from the aspect_ratios table
-        aspect_ratios = db.query(AspectRatio).all()
+        # # 2. Fetch aspect ratios dynamically from the aspect_ratios table
+        # aspect_ratios = db.query(AspectRatio).all()
 
-        formatted_data["aspect_ratios"] = [
-            {"label": ar.ratio, "value": ar.ratio} for ar in aspect_ratios
-        ]
+        # formatted_data["aspect_ratios"] = [
+        #     {"label": ar.ratio, "value": ar.ratio} for ar in aspect_ratios
+        # ]
 
         return StandardResponse(
             status=True,
